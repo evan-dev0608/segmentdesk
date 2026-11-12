@@ -1,0 +1,7 @@
+{
+  "name": "com.segmentdesk.import",
+  "description": "SegmentDesk browser import",
+  "path": "segmentdesk_import.exe",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://iajjbecglndbfohapjpnffdmoahjljeh/"]
+}

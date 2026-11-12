@@ -2,36 +2,31 @@
 <html lang="zh-CN">
 <meta charset="utf-8">
 <title>SegmentDesk 媒体检测</title>
-<style>
-  :root { color-scheme: light dark; font: 14px system-ui; }
-  body { width: 360px; margin: 0; background: Canvas; color: CanvasText; }
-  main { padding: 16px; }
-  header, li { display: flex; align-items: center; gap: 10px; }
-  header { justify-content: space-between; }
-  h1 { margin: 0; font-size: 17px; letter-spacing: -.02em; }
-  #site, #status, .host { font-size: 12px; color: color-mix(in srgb, CanvasText 68%, Canvas); }
-  #site { margin: 3px 0 0; overflow-wrap: anywhere; }
-  #status { margin: 14px 0 0; line-height: 1.5; }
-  button { flex-shrink: 0; cursor: pointer; padding: 7px 10px; border: 1px solid transparent; border-radius: 8px; font: inherit; font-size: 12px; }
-  button:disabled { cursor: default; opacity: .55; }
-  #capture { background: #2455c3; color: white; }
-  #capture[aria-pressed=true], .copy { background: Canvas; color: CanvasText; border-color: color-mix(in srgb, CanvasText 22%, Canvas); }
-  button:focus-visible { outline: 2px solid #5688ff; outline-offset: 2px; }
-  ul { display: grid; gap: 8px; list-style: none; padding: 0; margin: 12px 0 0; max-height: 340px; overflow: auto; }
-  ul:empty { display: none; }
-  li { padding: 9px; border-radius: 10px; background: color-mix(in srgb, CanvasText 6%, Canvas); }
-  .kind { padding: 3px 5px; border-radius: 5px; font-size: 10px; font-weight: 700; background: #dce8ff; color: #183e8e; }
-  .media { flex: 1; min-width: 0; }
-  .name, .host { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .name { font-size: 13px; font-weight: 600; }
-</style>
+<link rel="stylesheet" href="popup.css">
+<header class="masthead">
+  <img src="icon.png" alt="" width="34" height="34">
+  <div class="identity">
+    <h1>SegmentDesk</h1>
+    <p id="site">媒体检测</p>
+  </div>
+  <button id="capture" aria-pressed="false" disabled>开始检测</button>
+</header>
 <main>
-  <header>
-    <div><h1>SegmentDesk</h1><p id="site">媒体检测</p></div>
-    <button id="capture" aria-pressed="false" disabled>检测当前页面</button>
-  </header>
+  <div class="section-head">
+    <h2>当前页面</h2>
+    <span id="count" aria-live="polite">0 项</span>
+  </div>
+  <section id="empty">
+    <div class="empty-icon" aria-hidden="true"><span></span></div>
+    <h3 id="empty-title">还没有媒体</h3>
+    <p id="empty-description">开始检测后，在网页上播放视频。</p>
+  </section>
+  <ul id="results" aria-label="检测到的媒体"></ul>
+  <details id="variants" hidden>
+    <summary id="variant-label"></summary>
+    <ul id="variant-results" aria-label="单画质清单"></ul>
+  </details>
   <p id="status" role="status"></p>
-  <ul id="results" aria-label="检测到的媒体清单"></ul>
 </main>
 <script type="module" src="popup.js"></script>
 </html>

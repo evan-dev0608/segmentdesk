@@ -9,6 +9,52 @@ function serialize(work) {
   return result;
 }
 
+async function recordCandidates(tabId, candidates, documentId) {
+  const key = String(tabId);
+  const state = (await storage.get(key))[key];
+  if (!state?.active ||
+      (documentId && state.documentId && documentId !== state.documentId)) return;
+  const known = new Map(state.items.map(item => [item.url, item]));
+  const fresh = [];
+  let updated = false;
+  for (const candidate of candidates) {
+    const previous = known.get(candidate.url);
+    if (previous) {
+      if (candidate.size && !previous.size) {
+        previous.size = candidate.size;
+        updated = true;
+      }
+      continue;
+    }
+    known.set(candidate.url, candidate);
+    fresh.push(candidate);
+  }
+  if (updated || fresh.length) {
+    await storage.set({ [key]: {
+      ...state, items: [...fresh.reverse(), ...state.items].slice(0, 30),
+    } });
+  }
+}
+
+async function scanPage(tabId) {
+  const frames = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: () => [
+      ...performance.getEntriesByType('resource').map(
+        entry => ({ url: entry.name, mime: entry.contentType }),
+      ),
+      ...Array.from(document.querySelectorAll('video, audio, source'))
+        .flatMap(element => [element.currentSrc, element.src].filter(Boolean)
+          .map(url => ({ url, mime: element.type }))),
+    ],
+  });
+  const candidates = frames.flatMap(({ result }) => (result ?? []).flatMap(({ url, mime }) => {
+    const type = detectMedia(url, mime);
+    return type ? [{ type, url }] : [];
+  }));
+  await recordCandidates(tabId, candidates);
+}
+
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (!['start', 'stop'].includes(message.action) ||
       !Number.isInteger(message.tabId)) return;
@@ -17,9 +63,16 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     const state = (await storage.get(key))[key];
     await storage.set({
       [key]: message.action === 'start'
-        ? { active: true, items: [] }
-        : { active: false, items: state?.items ?? [] },
+        ? { active: true, items: [], ...(message.pageUrl ? { pageUrl: message.pageUrl } : {}) }
+        : { ...state, active: false, items: state?.items ?? [] },
     });
+    if (message.action === 'start') {
+      try {
+        await scanPage(message.tabId);
+      } catch {
+        // Live request detection still works when Chrome restricts script injection.
+      }
+    }
   }).then(() => reply({ ok: true }), () => reply({ ok: false }));
   return true;
 });
@@ -28,20 +81,40 @@ chrome.tabs.onRemoved.addListener(tabId => {
   serialize(() => storage.remove(String(tabId)));
 });
 
+function resetForNavigation({ tabId, frameId, url, documentId }) {
+  if (frameId !== 0) return;
+  const key = String(tabId);
+  serialize(async () => {
+    const state = (await storage.get(key))[key];
+    if (state) await storage.set({
+      [key]: { active: state.active, items: [], pageUrl: url,
+        ...(documentId ? { documentId } : {}) },
+    });
+  });
+}
+
+chrome.webNavigation.onCommitted.addListener(resetForNavigation);
+chrome.webNavigation.onHistoryStateUpdated.addListener(resetForNavigation);
+
 chrome.webRequest.onHeadersReceived.addListener(details => {
   if (details.tabId < 0 ||
       (details.statusCode !== 304 &&
        (details.statusCode < 200 || details.statusCode >= 300))) return;
-  const mime = details.responseHeaders?.find(
-    header => header.name.toLowerCase() === 'content-type'
-  )?.value;
+  const headers = new Map(details.responseHeaders?.map(
+    header => [header.name.toLowerCase(), header.value],
+  ));
+  const mime = headers.get('content-type');
   const type = detectMedia(details.url, mime);
   if (!type) return;
-  const key = String(details.tabId);
-  serialize(async () => {
-    const state = (await storage.get(key))[key];
-    if (!state?.active || state.items.some(item => item.url === details.url)) return;
-    state.items.unshift({ type, url: details.url });
-    await storage.set({ [key]: { active: true, items: state.items.slice(0, 30) } });
-  });
+  const candidate = { type, url: details.url };
+  if (type === 'MP4') {
+    const total = details.statusCode === 206
+      ? headers.get('content-range')?.match(/\/(\d+)$/)?.[1]
+      : headers.get('content-length');
+    const size = Number(total);
+    if (Number.isSafeInteger(size) && size > 0) candidate.size = size;
+  }
+  serialize(() => recordCandidates(
+    details.tabId, [candidate], details.frameId === 0 ? details.documentId : undefined,
+  ));
 }, { urls: ['http://*/*', 'https://*/*'] }, ['responseHeaders']);

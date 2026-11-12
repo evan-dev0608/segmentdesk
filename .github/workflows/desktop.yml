@@ -66,6 +66,14 @@ jobs:
           $version = ($versionLine -split '[:+]')[1].Trim()
           & $compiler "/DAppVersion=$version" 'packaging/windows/SegmentDesk.iss'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test and package Chrome extension
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: .
+        run: |
+          node --test browser-extension/media.test.mjs browser-extension/worker.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./browser-extension/build.ps1 -OutputDirectory desktop/dist
       - name: Smoke-test Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
@@ -73,12 +81,16 @@ jobs:
           $target = Join-Path $env:RUNNER_TEMP 'SegmentDesk-install-test'
           $setup = Start-Process -FilePath (Resolve-Path 'dist/SegmentDesk-windows-x64-setup.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="' + $target + '"')) -Wait -PassThru -WindowStyle Hidden
           if ($setup.ExitCode -ne 0) { throw "Installer exited with code $($setup.ExitCode)" }
-          foreach ($entry in 'stream_download.exe', 'flutter_windows.dll', 'data/flutter_assets') {
+          foreach ($entry in 'stream_download.exe', 'segmentdesk_import.exe', 'native_import.json', 'flutter_windows.dll', 'data/flutter_assets') {
             if (-not (Test-Path -LiteralPath (Join-Path $target $entry))) { throw "Missing installed file: $entry" }
+          }
+          $hostKey = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.segmentdesk.import'
+          if ((Get-Item -LiteralPath $hostKey).GetValue('') -ne (Join-Path $target 'native_import.json')) {
+            throw 'Chrome native messaging host registration is missing or incorrect'
           }
           $uninstaller = Get-ChildItem -LiteralPath $target -Filter 'unins*.exe' | Select-Object -First 1
           $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru -WindowStyle Hidden
-          if ($uninstall.ExitCode -ne 0 -or (Test-Path -LiteralPath (Join-Path $target 'stream_download.exe'))) {
+          if ($uninstall.ExitCode -ne 0 -or (Test-Path -LiteralPath (Join-Path $target 'stream_download.exe')) -or (Test-Path -LiteralPath $hostKey)) {
             throw 'Uninstall smoke test failed'
           }
       - name: Package macOS

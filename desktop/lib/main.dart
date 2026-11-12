@@ -6,6 +6,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import 'advanced.dart';
+import 'browser_import.dart';
 import 'core_output.dart';
 import 'core_service.dart';
 import 'settings.dart';
@@ -78,6 +79,7 @@ class Task {
   bool failed = false;
   int errorSignals = 0;
   bool uncheckedSegments = false;
+  double? progress;
   final List<String> log = [];
 }
 
@@ -230,7 +232,15 @@ class _WorkspaceState extends State<Workspace> {
   String status = '就绪';
   Preferences preferences = Preferences.defaults();
   bool preferencesReady = false;
+  bool checkingEnvironment = true;
+  String? coreUpdateStatus;
+  String? environmentIssue;
+  bool? ffmpegAvailable;
   Future<bool>? noConfigProbe;
+  Timer? browserImportTimer;
+  bool checkingBrowserImport = false;
+  bool showingSettings = false;
+  String? browserImportNotice;
 
   bool get busy => updating || launching || process != null;
 
@@ -241,15 +251,128 @@ class _WorkspaceState extends State<Workspace> {
   @override
   void initState() {
     super.initState();
+    final inbox = BrowserImport.inbox;
+    if (inbox != null) {
+      browserImportTimer = Timer.periodic(
+        const Duration(milliseconds: 750),
+        (_) => unawaited(checkBrowserImport(inbox)),
+      );
+    }
     loadPreferences();
-    core
-        .installed()
-        .then((value) {
-          if (mounted) setState(() => installed = value);
-        })
-        .catchError((Object error) {
-          if (mounted) setState(() => status = '读取核心失败：$error');
-        });
+    unawaited(checkEnvironment());
+  }
+
+  Future<void> checkEnvironment() async {
+    final windows = Platform.isWindows;
+    final executable = windows ? 'ffmpeg.exe' : 'ffmpeg';
+    final path = Platform.environment['PATH'] ?? '';
+    final foundFFmpeg = path.split(windows ? ';' : ':').any((entry) {
+      final directory = entry.replaceAll('"', '').trim();
+      return directory.isNotEmpty &&
+          File('$directory${CoreService.sep}$executable').existsSync();
+    });
+    CoreInstall? active;
+    String? issue;
+    try {
+      active = await core.installed();
+      if (active != null) {
+        final probe = await Process.run(active.executable, [
+          '--version',
+        ]).timeout(const Duration(seconds: 5));
+        if (probe.exitCode != 0) throw StateError('核心版本检查失败');
+      }
+    } catch (_) {
+      active = null;
+      issue = '核心无法运行，请重新安装。';
+    }
+    if (!mounted) return;
+    setState(() {
+      installed = active;
+      environmentIssue = issue;
+      ffmpegAvailable = foundFFmpeg;
+      checkingEnvironment = false;
+      if (active != null && !foundFFmpeg && status == '就绪') {
+        status = '未找到 FFmpeg，请在设置中查看环境提示。';
+      }
+    });
+  }
+
+  Future<void> openClientUpdates() async {
+    const releases = 'https://github.com/evan-dev0608/segmentdesk/releases';
+    try {
+      final result = await Process.run(
+        Platform.isWindows
+            ? 'rundll32.exe'
+            : Platform.isMacOS
+            ? 'open'
+            : 'xdg-open',
+        [if (Platform.isWindows) 'url.dll,FileProtocolHandler', releases],
+      );
+      if (result.exitCode != 0) throw StateError('浏览器启动失败');
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('无法打开发布页：$releases')));
+    }
+  }
+
+  @override
+  void dispose() {
+    browserImportTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> checkBrowserImport(Directory inbox) async {
+    if (showingSettings) return;
+    if (checkingBrowserImport ||
+        !preferencesReady ||
+        ModalRoute.of(context)?.isCurrent != true) {
+      return;
+    }
+    checkingBrowserImport = true;
+    try {
+      if (!await inbox.exists()) return;
+      await for (final file in inbox.list(followLinks: false)) {
+        if (file is! File || !file.path.endsWith('.json')) continue;
+        if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+        if (installed == null || busy) {
+          final message = installed == null
+              ? '有浏览器导入等待处理，请先安装下载核心。'
+              : '有浏览器导入等待处理，将在当前操作结束后打开。';
+          if (browserImportNotice != message) {
+            setState(() => browserImportNotice = message);
+          }
+          return;
+        }
+        final request = await file.length() <= 32768
+            ? BrowserImport.parse(
+                utf8.decode(await file.readAsBytes(), allowMalformed: true),
+              )
+            : null;
+        if (!mounted ||
+            showingSettings ||
+            busy ||
+            ModalRoute.of(context)?.isCurrent != true) {
+          return;
+        }
+        file.deleteSync();
+        if (browserImportNotice != null) {
+          setState(() => browserImportNotice = null);
+        }
+        if (request != null) {
+          if (!request.canImport) {
+            setState(() => status = '当前版本尚未开放 ${request.type} 浏览器导入。');
+            return;
+          }
+          await createTask(browserImport: request);
+          return;
+        }
+      }
+    } on FileSystemException {
+      // The inbox can disappear during uninstall or be consumed by another window.
+    } finally {
+      checkingBrowserImport = false;
+    }
   }
 
   Future<void> loadPreferences() async {
@@ -263,50 +386,43 @@ class _WorkspaceState extends State<Workspace> {
     }
   }
 
-  Future<void> openSettings() async {
-    final value = await showDialog<Preferences>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => SettingsDialog(initial: preferences, core: installed),
-    );
-    if (value != null && mounted) applyPreferences(value);
-  }
-
   void applyPreferences(Preferences value) {
     setState(() => preferences = value);
     widget.onPreferencesChanged(value);
   }
 
-  Future<void> update() async {
-    if (busy) return;
+  Future<void> update(String proxy) async {
+    if (busy || checkingEnvironment) return;
     setState(() => updating = true);
     try {
       final value = await core.update((message) {
-        if (mounted) setState(() => status = message);
-      }, proxy: parseUpdateProxy(preferences.updateProxy));
+        if (mounted) setState(() => coreUpdateStatus = message);
+      }, proxy: parseUpdateProxy(proxy));
       if (mounted) {
         setState(() {
           installed = value;
+          environmentIssue = null;
           noConfigProbe = null;
-          status = value.verified
+          coreUpdateStatus = value.verified
               ? '核心已就绪 · ${value.tag}'
               : '核心已就绪 · ${value.tag}（本次未做完整性校验）';
         });
       }
     } catch (error) {
-      if (mounted) setState(() => status = '更新失败：$error');
+      if (mounted) setState(() => coreUpdateStatus = '更新失败：$error');
     } finally {
       if (mounted) setState(() => updating = false);
     }
   }
 
-  Future<void> createTask() async {
+  Future<void> createTask({BrowserImport? browserImport}) async {
     final active = installed;
     if (active == null || busy || !preferencesReady) return;
     final request = await showDialog<AdvancedRequest>(
       context: context,
       builder: (_) => NewDownload(
         initialFolder: preferences.folder,
+        browserImport: browserImport,
         buildRequest: (input, folder, name) =>
             AdvancedRequest(name.isEmpty ? inputTitle(input) : name, folder, [
               input,
@@ -331,6 +447,7 @@ class _WorkspaceState extends State<Workspace> {
             directory: folder,
             initialInput: input,
             initialName: name,
+            initialContainer: preferences.container,
           ),
         ),
       ),
@@ -341,20 +458,24 @@ class _WorkspaceState extends State<Workspace> {
   String inputTitle(String input) {
     final uri = Uri.tryParse(input);
     if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
-      return uri.host;
+      return uri.pathSegments.where((part) => part.isNotEmpty).lastOrNull ??
+          uri.host;
     }
     return File(input).uri.pathSegments.last;
   }
 
-  Future<void> openAdvanced() async {
+  Future<void> openAdvanced({String? folder}) async {
     final active = installed;
     if (active == null || busy || !preferencesReady) return;
+    final ffmpeg = await findFFmpegBinary();
+    if (!mounted || busy) return;
     final request = await showDialog<AdvancedRequest>(
       context: context,
       builder: (_) => AdvancedDialog(
         core: active,
-        directory: Directory(preferences.folder).absolute.path,
+        directory: Directory(folder ?? preferences.folder).absolute.path,
         toolsOnly: true,
+        ffmpeg: ffmpeg,
       ),
     );
     if (request != null && mounted && !busy) await launch(active, request);
@@ -374,12 +495,17 @@ class _WorkspaceState extends State<Workspace> {
       // doctor 的职责是检查本机环境（含全局配置文件），豁免配置隔离。
       // 旧发行版没有 --no-config，此时只跳过隔离并提示全局配置可能生效。
       final canIsolate =
-          !request.isDoctor && await supportsNoConfig(active.executable);
+          request.executable == null &&
+          !request.isDoctor &&
+          await supportsNoConfig(active.executable);
       var arguments = isolateCoreArguments(
         request.arguments,
         isolate: canIsolate,
       );
-      if (!canIsolate && !request.isDoctor && mounted) {
+      if (request.executable == null &&
+          !canIsolate &&
+          !request.isDoctor &&
+          mounted) {
         task.log.add(
           '提示：当前核心未提供 --no-config，已跳过配置隔离；'
           '全局 config.conf 可能影响本次任务。',
@@ -409,7 +535,7 @@ class _WorkspaceState extends State<Workspace> {
         });
       }
       final child = await Process.start(
-        active.executable,
+        request.executable ?? active.executable,
         arguments,
         workingDirectory: request.directory,
       );
@@ -433,6 +559,12 @@ class _WorkspaceState extends State<Workspace> {
           }
           if (task.log.length > 1000) task.log.removeAt(0);
           if (coreFailureSignal(line)) task.errorSignals++;
+          final progress = coreDownloadProgress(line);
+          if (progress != null && task.state != '停止中' && task.state != '合并中') {
+            task.progress = progress;
+            task.state = '下载中';
+            status = task.state;
+          }
           if (coreTaskPhase(line) case final phase? when task.state != '停止中') {
             task.state = phase;
             status = phase;
@@ -569,191 +701,299 @@ class _WorkspaceState extends State<Workspace> {
                         child: ListTile(
                           leading: Icon(icon, size: 20),
                           title: Text(label),
-                          selected: filter == index,
+                          selected: !showingSettings && filter == index,
                           selectedTileColor: colors.secondaryContainer,
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
-                          onTap: () => setState(() => filter = index),
+                          onTap: () => setState(() {
+                            showingSettings = false;
+                            filter = index;
+                          }),
                         ),
                       ),
                     const Spacer(),
                     ListTile(
-                      leading: const Icon(Icons.tune_rounded, size: 20),
-                      title: const Text('文件工具'),
-                      onTap: installed == null || busy || !preferencesReady
-                          ? null
-                          : openAdvanced,
-                    ),
-                    ListTile(
                       leading: const Icon(Icons.settings_outlined, size: 20),
                       title: const Text('设置'),
-                      onTap: preferencesReady ? openSettings : null,
-                    ),
-                    const Divider(),
-                    Text('下载核心', style: text.labelLarge),
-                    const SizedBox(height: 6),
-                    Text(installed?.tag ?? '未安装', style: text.bodySmall),
-                    const SizedBox(height: 12),
-                    OutlinedButton.icon(
-                      onPressed: busy || !preferencesReady ? null : update,
-                      icon: const Icon(
-                        Icons.system_update_alt_rounded,
-                        size: 18,
+                      selected: showingSettings,
+                      selectedTileColor: colors.secondaryContainer,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                      label: Text(installed == null ? '安装核心' : '检查更新'),
+                      onTap: preferencesReady
+                          ? () => setState(() => showingSettings = true)
+                          : null,
                     ),
                   ],
                 ),
               ),
             ),
           ),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(28, 24, 28, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          ['全部任务', '运行中', '已结束'][filter],
-                          style: text.headlineSmall,
-                        ),
-                      ),
-                      if (process != null)
-                        OutlinedButton(
-                          onPressed: stop,
-                          child: const Text('停止任务'),
-                        ),
-                      const SizedBox(width: 12),
-                      FilledButton.icon(
-                        onPressed: installed == null || busy
-                            ? null
-                            : createTask,
-                        icon: const Icon(Icons.add_rounded),
-                        label: const Text('新建下载'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 18),
-                  Expanded(
-                    child: Card(
-                      color: colors.surfaceContainerLow,
-                      elevation: 0,
-                      margin: EdgeInsets.zero,
-                      clipBehavior: Clip.antiAlias,
-                      child: visible.isEmpty
-                          ? Center(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.download_rounded,
-                                    color: colors.primary,
-                                    size: 40,
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Text('暂无任务', style: text.titleLarge),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    installed == null
-                                        ? '安装下载核心后即可添加链接'
-                                        : '点击「新建下载」添加链接',
-                                  ),
-                                ],
-                              ),
-                            )
-                          : ListView.separated(
-                              itemCount: visible.length,
-                              separatorBuilder: (_, _) =>
-                                  const Divider(height: 1),
-                              itemBuilder: (_, index) {
-                                final task = visible[index];
-                                return ListTile(
-                                  selected: identical(selected, task),
-                                  selectedTileColor: colors.secondaryContainer
-                                      .withValues(alpha: .4),
-                                  leading: const Icon(Icons.movie_outlined),
-                                  title: Text(task.name),
-                                  subtitle: Text(
-                                    task.folder,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  trailing: Chip(
-                                    label: Text(task.state),
-                                    avatar: Icon(
-                                      task.failed
-                                          ? Icons.error_outline
-                                          : task.running
-                                          ? Icons.timelapse
-                                          : task.state == '已完成'
-                                          ? Icons.check_circle_outline
-                                          : Icons.stop_circle_outlined,
-                                      size: 16,
-                                    ),
-                                    side: BorderSide.none,
-                                    backgroundColor: task.failed
-                                        ? colors.errorContainer
-                                        : colors.secondaryContainer,
-                                  ),
-                                  onTap: () => setState(() => selected = task),
-                                );
-                              },
-                            ),
-                    ),
-                  ),
-                  if (selected != null && visible.contains(selected)) ...[
-                    const SizedBox(height: 16),
+          if (showingSettings)
+            Expanded(
+              child: SettingsPage(
+                initial: preferences,
+                core: installed,
+                checkingEnvironment: checkingEnvironment,
+                environmentIssue: environmentIssue,
+                ffmpegAvailable: ffmpegAvailable,
+                coreUpdateStatus: coreUpdateStatus,
+                updatingCore: updating,
+                onCoreUpdate: busy || checkingEnvironment ? null : update,
+                onClientUpdate: openClientUpdates,
+                onClose: () => setState(() => showingSettings = false),
+                onSaved: (value) {
+                  applyPreferences(value);
+                  setState(() => showingSettings = false);
+                },
+              ),
+            )
+          else
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(28, 24, 28, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
                     Row(
                       children: [
-                        Expanded(child: Text('任务日志', style: text.titleSmall)),
-                        if (!selected!.running)
-                          IconButton(
-                            tooltip: '打开输出目录',
-                            icon: const Icon(Icons.folder_open_outlined),
-                            onPressed: () => openTaskFolder(selected!),
+                        Expanded(
+                          child: Text(
+                            ['全部任务', '运行中', '已结束'][filter],
+                            style: text.headlineSmall,
                           ),
-                        if (selected!.failed)
-                          TextButton.icon(
-                            icon: const Icon(Icons.replay),
-                            label: const Text('用原设置重试'),
-                            onPressed: busy || installed == null
-                                ? null
-                                : () => launch(installed!, selected!.request),
+                        ),
+                        if (process != null)
+                          OutlinedButton(
+                            onPressed: stop,
+                            child: const Text('停止任务'),
                           ),
+                        const SizedBox(width: 12),
+                        FilledButton.icon(
+                          onPressed: installed == null || busy
+                              ? null
+                              : createTask,
+                          icon: const Icon(Icons.add_rounded),
+                          label: const Text('新建下载'),
+                        ),
+                        PopupMenuButton<String>(
+                          tooltip: '更多操作',
+                          enabled:
+                              installed != null && !busy && preferencesReady,
+                          onSelected: (_) => openAdvanced(),
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(
+                              value: 'local-media',
+                              child: Text('处理本地媒体文件'),
+                            ),
+                          ],
+                        ),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      height: 128,
+                    const SizedBox(height: 18),
+                    Expanded(
                       child: Card(
-                        margin: EdgeInsets.zero,
-                        elevation: 0,
                         color: colors.surfaceContainerLow,
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: SingleChildScrollView(
-                            reverse: true,
-                            child: SelectableText(selected!.log.join('\n')),
+                        elevation: 0,
+                        margin: EdgeInsets.zero,
+                        clipBehavior: Clip.antiAlias,
+                        child: visible.isEmpty
+                            ? Center(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.download_rounded,
+                                      color: colors.primary,
+                                      size: 40,
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Text('暂无任务', style: text.titleLarge),
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      installed == null
+                                          ? (checkingEnvironment
+                                                ? '正在检查下载环境…'
+                                                : environmentIssue ??
+                                                      '请在设置中安装下载核心。')
+                                          : '点击「新建下载」添加链接',
+                                    ),
+                                  ],
+                                ),
+                              )
+                            : ListView.separated(
+                                itemCount: visible.length,
+                                separatorBuilder: (_, _) =>
+                                    const Divider(height: 1),
+                                itemBuilder: (_, index) {
+                                  final task = visible[index];
+                                  return ListTile(
+                                    selected: identical(selected, task),
+                                    selectedTileColor: colors.secondaryContainer
+                                        .withValues(alpha: .4),
+                                    leading: const Icon(Icons.movie_outlined),
+                                    title: Text(
+                                      task.name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    subtitle: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          task.folder,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        if (task.progress case final progress?
+                                            when task.running &&
+                                                task.state == '下载中')
+                                          Padding(
+                                            padding: const EdgeInsets.only(
+                                              top: 8,
+                                              bottom: 4,
+                                            ),
+                                            child: LinearProgressIndicator(
+                                              value: progress,
+                                              semanticsLabel: '当前轨道下载进度',
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Chip(
+                                          label: Text(
+                                            task.running &&
+                                                    task.state == '下载中' &&
+                                                    task.progress != null
+                                                ? '当前轨道 · ${(task.progress! * 100).toStringAsFixed(1)}%'
+                                                : task.state,
+                                          ),
+                                          avatar: Icon(
+                                            task.failed
+                                                ? Icons.error_outline
+                                                : task.running
+                                                ? Icons.timelapse
+                                                : task.state == '已完成'
+                                                ? Icons.check_circle_outline
+                                                : Icons.stop_circle_outlined,
+                                            size: 16,
+                                          ),
+                                          side: BorderSide.none,
+                                          backgroundColor: task.failed
+                                              ? colors.errorContainer
+                                              : colors.secondaryContainer,
+                                        ),
+                                        if (task.state.startsWith('已完成'))
+                                          PopupMenuButton<String>(
+                                            tooltip: '任务更多操作',
+                                            enabled:
+                                                installed != null &&
+                                                !busy &&
+                                                preferencesReady,
+                                            onSelected: (_) => openAdvanced(
+                                              folder: task.folder,
+                                            ),
+                                            itemBuilder: (_) => const [
+                                              PopupMenuItem(
+                                                value: 'local-media',
+                                                child: Text('处理输出目录中的媒体'),
+                                              ),
+                                            ],
+                                          ),
+                                        IconButton(
+                                          tooltip: task.running
+                                              ? '停止任务后可移除'
+                                              : '从列表移除任务',
+                                          icon: const Icon(
+                                            Icons.delete_outline,
+                                          ),
+                                          onPressed: task.running
+                                              ? null
+                                              : () => setState(() {
+                                                  tasks.remove(task);
+                                                  if (identical(
+                                                    selected,
+                                                    task,
+                                                  )) {
+                                                    selected = visible
+                                                        .where(
+                                                          (item) => !identical(
+                                                            item,
+                                                            task,
+                                                          ),
+                                                        )
+                                                        .firstOrNull;
+                                                  }
+                                                }),
+                                        ),
+                                      ],
+                                    ),
+                                    onTap: () =>
+                                        setState(() => selected = task),
+                                  );
+                                },
+                              ),
+                      ),
+                    ),
+                    if (selected != null) ...[
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(child: Text('任务日志', style: text.titleSmall)),
+                          if (!selected!.running)
+                            IconButton(
+                              tooltip: '打开输出目录',
+                              icon: const Icon(Icons.folder_open_outlined),
+                              onPressed: () => openTaskFolder(selected!),
+                            ),
+                          if (selected!.failed)
+                            TextButton.icon(
+                              icon: const Icon(Icons.replay),
+                              label: const Text('用原设置重试'),
+                              onPressed: busy || installed == null
+                                  ? null
+                                  : () => launch(installed!, selected!.request),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        height: 128,
+                        child: Card(
+                          margin: EdgeInsets.zero,
+                          elevation: 0,
+                          color: colors.surfaceContainerLow,
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: SingleChildScrollView(
+                              reverse: true,
+                              child: SelectableText(selected!.log.join('\n')),
+                            ),
                           ),
                         ),
                       ),
+                    ],
+                    const SizedBox(height: 12),
+                    if (((selected?.running ?? false) &&
+                        (selected?.progress == null ||
+                            selected?.state != '下载中')))
+                      const LinearProgressIndicator(),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: SelectableText(status, style: text.bodySmall),
                     ),
+                    if (browserImportNotice case final message?)
+                      Text(message, style: text.bodySmall),
                   ],
-                  const SizedBox(height: 12),
-                  if (updating || (selected?.running ?? false))
-                    const LinearProgressIndicator(),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: SelectableText(status, style: text.bodySmall),
-                  ),
-                ],
+                ),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -766,8 +1006,10 @@ class NewDownload extends StatefulWidget {
     required this.initialFolder,
     required this.buildRequest,
     required this.openOptions,
+    this.browserImport,
   });
   final String initialFolder;
+  final BrowserImport? browserImport;
   final AdvancedRequest Function(String input, String folder, String name)
   buildRequest;
   final Future<AdvancedRequest?> Function(
@@ -783,7 +1025,7 @@ class NewDownload extends StatefulWidget {
 
 class _NewDownloadState extends State<NewDownload> {
   final form = GlobalKey<FormState>();
-  final url = TextEditingController();
+  late final url = TextEditingController(text: widget.browserImport?.url);
   final name = TextEditingController();
   late final folder = TextEditingController(text: widget.initialFolder);
   String? localInput;
@@ -811,7 +1053,8 @@ class _NewDownloadState extends State<NewDownload> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('新建下载'),
+    title: Text(widget.browserImport == null ? '新建下载' : '确认下载'),
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
     scrollable: true,
     content: SizedBox(
       width: 520,
@@ -821,12 +1064,15 @@ class _NewDownloadState extends State<NewDownload> {
           mainAxisSize: MainAxisSize.min,
           children: [
             TextFormField(
-              autofocus: true,
+              autofocus: widget.browserImport == null,
               controller: url,
               decoration: InputDecoration(
                 labelText: '链接或本地清单',
                 hintText: 'https://…',
-                helperText: '网页视频可用 Chrome 的 SegmentDesk 媒体检测扩展获取清单链接。',
+                helperText: switch (widget.browserImport?.title) {
+                  final title? when title.isNotEmpty => '来自 Chrome · $title',
+                  _ => '网页视频可用 Chrome 的 SegmentDesk 媒体检测扩展获取清单链接。',
+                },
                 helperMaxLines: 2,
                 suffixIcon: IconButton(
                   tooltip: '选择本地清单',

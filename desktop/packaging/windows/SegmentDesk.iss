@@ -23,6 +23,10 @@ SolidCompression=yes
 
 [Files]
 Source: "..\..\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\windows\runner\native_import.json"; DestDir: "{app}"; Flags: ignoreversion
+
+[Registry]
+Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.segmentdesk.import"; ValueType: string; ValueName: ""; ValueData: "{app}\native_import.json"; Flags: uninsdeletekey
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked

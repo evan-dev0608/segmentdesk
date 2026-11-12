@@ -9,11 +9,95 @@ import 'package:stream_download/settings.dart';
 import 'package:stream_download/core_output.dart';
 import 'package:stream_download/core_service.dart';
 import 'package:stream_download/advanced.dart';
+import 'package:stream_download/browser_import.dart';
 import 'package:stream_download/main.dart';
 import 'package:stream_download/selection.dart';
 import 'package:stream_download/selection_dialog.dart';
 
 void main() {
+  test(
+    'separates audio and subtitle progress frames without newlines',
+    () async {
+      final lines = await coreOutputLines(
+        Stream.fromIterable([
+          utf8.encode(
+            '15:19:59.000 INFO : Aud English\nAud 128 Kbps 1/2 50.0%Su',
+          ),
+          utf8.encode('b English 1/4 25.0%'),
+        ]),
+      ).toList();
+      expect(lines, [
+        '15:19:59.000 INFO : Aud English',
+        'Aud 128 Kbps 1/2 50.0%',
+        'Sub English 1/4 25.0%',
+      ]);
+      expect(lines.map(coreDownloadProgress), [null, .5, .25]);
+    },
+  );
+  test('reads actual download percentage from a core progress frame', () {
+    expect(
+      coreDownloadProgress('Vid 320x184 | 246 Kbps ━━━ 2/3 66.67%'),
+      closeTo(.6667, .00001),
+    );
+    expect(coreDownloadProgress('15:19:59.000 INFO : 2/3 66.67%'), isNull);
+    expect(coreDownloadProgress('Vid 320x184 | 246 Kbps 2/3 120%'), isNull);
+  });
+  test('separates adjacent upstream log messages', () async {
+    final lines = await coreOutputLines(
+      Stream.value(
+        utf8.encode(
+          '15:19:58.520 INFO : Vid 1920x1080'
+          '15:19:58.772 WARN : 写出meta json\n'
+          '15:19:59.000 INFO : 开始下载...Vid 320x184 | 246 Kbps 0/3 0.00%'
+          'Vid 320x184 | 246 Kbps 1/3 33.33%',
+        ),
+      ),
+    ).toList();
+    expect(lines, [
+      '15:19:58.520 INFO : Vid 1920x1080',
+      '15:19:58.772 WARN : 写出meta json',
+      '15:19:59.000 INFO : 开始下载...',
+      'Vid 320x184 | 246 Kbps 0/3 0.00%',
+      'Vid 320x184 | 246 Kbps 1/3 33.33%',
+    ]);
+  });
+
+  testWidgets('browser import prefills the original signed URL', (
+    tester,
+  ) async {
+    const url = 'https://cdn.example.test/play?token=A%2Bb';
+    final imported = BrowserImport.parse(
+      jsonEncode({'version': 1, 'type': 'HLS', 'url': url, 'title': '示例视频'}),
+    );
+    expect(imported?.url, url);
+    expect(imported?.canImport, isTrue);
+    for (final type in ['DASH', 'MSS', 'M3U', 'MP4']) {
+      final candidate = BrowserImport.parse(
+        jsonEncode({'version': 1, 'type': type, 'url': url}),
+      );
+      expect(candidate?.url, url);
+      expect(candidate?.canImport, type != 'MP4');
+    }
+    expect(
+      BrowserImport.parse(
+        '{"version":1,"type":"HLS","url":"file:///media.m3u8"}',
+      ),
+      isNull,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NewDownload(
+          initialFolder: '.',
+          browserImport: imported,
+          buildRequest: (_, _, _) => throw UnimplementedError(),
+          openOptions: (_, _, _) async => null,
+        ),
+      ),
+    );
+    expect(find.text(url), findsOneWidget);
+    expect(find.text('来自 Chrome · 示例视频'), findsOneWidget);
+  });
+
   test('maps recognized upstream log phases', () {
     expect(coreTaskPhase('INFO 开始下载...'), '下载中');
     expect(coreTaskPhase('INFO Binary merging...'), '合并中');
@@ -94,7 +178,8 @@ void main() {
   ) async {
     await tester.pumpWidget(const DownloadApp());
     expect(find.text('新建下载'), findsOneWidget);
-    expect(find.text('下载核心'), findsOneWidget);
+    expect(find.text('下载核心'), findsNothing);
+    expect(find.text('查看客户端更新'), findsNothing);
     await tester.tap(find.text('运行中'));
     await tester.pump();
     expect(find.text('运行中'), findsNWidgets(2));

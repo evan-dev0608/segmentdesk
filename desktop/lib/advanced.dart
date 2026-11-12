@@ -118,9 +118,11 @@ class AdvancedRequest {
     this.directory,
     this.arguments, {
     this.tool = false,
+    this.executable,
   });
   final String title, directory;
   final List<String> arguments;
+  final String? executable;
 
   /// 是否为上游工具子命令（concat / merge / mux / doctor）。
   /// 这些子命令未注册根命令的 --ffmpeg-binary-path 等选项。
@@ -137,19 +139,62 @@ class AdvancedDialog extends StatefulWidget {
     required this.directory,
     this.initialInput = '',
     this.initialName = '',
+    this.initialContainer = 'none',
     this.toolsOnly = false,
+    this.ffmpeg,
   });
   final CoreInstall core;
   final String directory;
   final String initialInput;
   final String initialName;
+  final String initialContainer;
   final bool toolsOnly;
+  final String? ffmpeg;
 
   @override
   State<AdvancedDialog> createState() => _AdvancedDialogState();
 }
 
 class _AdvancedDialogState extends State<AdvancedDialog> {
+  Future<void> remuxLocalFile() async {
+    final ffmpeg = widget.ffmpeg;
+    if (ffmpeg == null || probing) return;
+    setState(() => probing = true);
+    try {
+      final input = await openFile(
+        initialDirectory: Directory(widget.directory).existsSync()
+            ? widget.directory
+            : null,
+      );
+      if (input == null || !mounted) return;
+      final output = await getSaveLocation(
+        initialDirectory: widget.directory,
+        suggestedName: '${input.name}.mkv',
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'Matroska', extensions: ['mkv']),
+        ],
+      );
+      if (output == null || !mounted) return;
+      final path = output.path.toLowerCase().endsWith('.mkv')
+          ? output.path
+          : '${output.path}.mkv';
+      Navigator.pop(
+        context,
+        AdvancedRequest(
+          '混流 · ${input.name}',
+          File(path).parent.path,
+          ['-nostdin', '-n', '-i', input.path, '-map', '0', '-c', 'copy', path],
+          tool: true,
+          executable: ffmpeg,
+        ),
+      );
+    } on Exception catch (exception) {
+      if (mounted) setState(() => error = '无法选择文件：$exception');
+    } finally {
+      if (mounted) setState(() => probing = false);
+    }
+  }
+
   static const repeatable = {
     '--input',
     '--header',
@@ -272,6 +317,14 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
         } else {
           tools.removeWhere((command, _) => command.isNotEmpty);
           if (tools['']?.isNotEmpty != true) error = '无法读取当前核心的参数帮助。';
+          final flags = tools['']?.map((option) => option.flag).toSet() ?? {};
+          if (flags.contains('--save-dir')) {
+            values['--save-dir'] = [widget.directory];
+          }
+          if (flags.contains('--mux-after-done') &&
+              widget.initialContainer != 'none') {
+            values['--mux-after-done'] = ['format=${widget.initialContainer}'];
+          }
           if (widget.initialName.isNotEmpty &&
               tools['']?.any((option) => option.flag == '--save-name') ==
                   true) {
@@ -372,7 +425,7 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
       if (tracks.isEmpty) {
         throw StateError('核心输出的元数据中没有可用轨道。');
       }
-      if (!mounted) return;
+      if (!mounted || address.text.trim() != input) return;
       final choice = await showDialog<TrackSelection>(
         context: context,
         builder: (_) => TrackSelectionDialog(
@@ -382,7 +435,9 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
           initialDrop: firstValue('--vod-drop-parts') ?? '',
         ),
       );
-      if (choice != null && mounted) applyTrackSelection(choice);
+      if (choice != null && mounted && address.text.trim() == input) {
+        applyTrackSelection(choice);
+      }
     } catch (exception) {
       if (mounted) setState(() => error = '无法读取轨道：$exception');
     } finally {
@@ -483,6 +538,7 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
   }
 
   void submit() {
+    if (probing) return;
     final input = address.text.trim();
     if (mode.isEmpty &&
         (input.isEmpty || input.startsWith('-') || input.startsWith('@'))) {
@@ -625,101 +681,166 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.toolsOnly && (loading || tools.isEmpty)) {
+      return AlertDialog(
+        title: const Text('文件工具'),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        content: loading
+            ? const Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('正在检查核心支持的工具…'),
+                  SizedBox(height: 12),
+                  LinearProgressIndicator(),
+                ],
+              )
+            : Text(
+                widget.ffmpeg == null
+                    ? '当前核心没有独立文件工具。安装 FFmpeg 并将它加入 PATH，即可使用本地混流。'
+                    : '选择一个本地媒体文件，将其中的轨道原样封装为 MKV。${probing
+                          ? ''
+                          : error != null && !error!.contains('未提供')
+                          ? '\n$error'
+                          : ''}',
+              ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
+          if (!loading && widget.ffmpeg != null)
+            FilledButton(
+              onPressed: probing ? null : remuxLocalFile,
+              child: const Text('选择媒体文件'),
+            ),
+        ],
+      );
+    }
     final available = tools[mode] ?? [];
-    final filtered = available.where(
-      (option) =>
-          '${option.flag} ${option.description}'.toLowerCase().contains(query),
-    );
+    const common = [
+      '--save-dir',
+      '--save-name',
+      '--mux-after-done',
+      '--thread-count',
+    ];
+    final filtered = available
+        .where(
+          (option) => '${option.flag} ${option.description}'
+              .toLowerCase()
+              .contains(query),
+        )
+        .toList();
+    if (!widget.toolsOnly) {
+      int rank(CoreOption option) {
+        final index = common.indexOf(option.flag);
+        return index < 0 ? common.length + available.indexOf(option) : index;
+      }
+
+      filtered.sort((a, b) => rank(a).compareTo(rank(b)));
+    }
     return AlertDialog(
       title: Text(widget.toolsOnly ? '文件工具' : '高级下载选项'),
-      content: SizedBox(
-        width: 620,
-        height: 500,
-        child: Column(
-          children: [
-            if (loading || probing) const LinearProgressIndicator(),
-            if (!loading && available.isNotEmpty) ...[
-              DropdownButtonFormField<String>(
-                initialValue: mode,
-                decoration: const InputDecoration(labelText: '操作'),
-                items: [
-                  for (final entry in toolLabels.entries)
-                    if (tools.containsKey(entry.key))
-                      DropdownMenuItem(
-                        value: entry.key,
-                        child: Text(entry.value),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      content: AbsorbPointer(
+        absorbing: probing,
+        child: ExcludeFocus(
+          excluding: probing,
+          child: SizedBox(
+            width: 620,
+            height: 500,
+            child: Column(
+              children: [
+                if (loading || probing) const LinearProgressIndicator(),
+                if (!loading && available.isNotEmpty) ...[
+                  if (widget.toolsOnly)
+                    DropdownButtonFormField<String>(
+                      initialValue: mode,
+                      decoration: const InputDecoration(labelText: '操作'),
+                      items: [
+                        for (final entry in toolLabels.entries)
+                          if (tools.containsKey(entry.key))
+                            DropdownMenuItem(
+                              value: entry.key,
+                              child: Text(entry.value),
+                            ),
+                      ],
+                      onChanged: (value) => setState(() {
+                        mode = value!;
+                        values.clear();
+                        error = null;
+                      }),
+                    ),
+                  if (mode.isEmpty) ...[
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: address,
+                      decoration: InputDecoration(
+                        labelText: '链接或本地清单',
+                        suffixIcon: IconButton(
+                          tooltip: '选择本地清单',
+                          icon: const Icon(Icons.folder_open_outlined),
+                          onPressed: () async {
+                            final file = await openFile();
+                            if (mounted && !probing && file != null) {
+                              address.text = file.path;
+                            }
+                          },
+                        ),
                       ),
-                ],
-                onChanged: (value) => setState(() {
-                  mode = value!;
-                  values.clear();
-                  error = null;
-                }),
-              ),
-              if (mode.isEmpty) ...[
-                const SizedBox(height: 10),
-                TextField(
-                  controller: address,
-                  decoration: InputDecoration(
-                    labelText: '链接或本地清单',
-                    suffixIcon: IconButton(
-                      tooltip: '选择本地清单',
-                      icon: const Icon(Icons.folder_open_outlined),
-                      onPressed: () async {
-                        final file = await openFile();
-                        if (mounted && file != null) address.text = file.path;
-                      },
                     ),
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Wrap(
-                  spacing: 6,
-                  children: [
-                    TextButton.icon(
-                      onPressed: probing || !supportsTrackSelection
-                          ? null
-                          : previewTracks,
-                      icon: const Icon(Icons.playlist_add_check_outlined),
-                      label: const Text('读取轨道'),
-                    ),
-                    TextButton.icon(
-                      onPressed: probing || !supportsTrackSelection
-                          ? null
-                          : loadLocalChannels,
-                      icon: const Icon(Icons.file_open_outlined),
-                      label: const Text('本地 IPTV'),
-                    ),
-                    TextButton.icon(
-                      onPressed: probing || !supportsTrackSelection
-                          ? null
-                          : loadRemoteChannels,
-                      icon: const Icon(Icons.cloud_download_outlined),
-                      label: const Text('远程 IPTV'),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 6,
+                      children: [
+                        TextButton.icon(
+                          onPressed: probing || !supportsTrackSelection
+                              ? null
+                              : previewTracks,
+                          icon: const Icon(Icons.playlist_add_check_outlined),
+                          label: const Text('读取轨道'),
+                        ),
+                        TextButton.icon(
+                          onPressed: probing || !supportsTrackSelection
+                              ? null
+                              : loadLocalChannels,
+                          icon: const Icon(Icons.file_open_outlined),
+                          label: const Text('本地 IPTV'),
+                        ),
+                        TextButton.icon(
+                          onPressed: probing || !supportsTrackSelection
+                              ? null
+                              : loadRemoteChannels,
+                          icon: const Icon(Icons.cloud_download_outlined),
+                          label: const Text('远程 IPTV'),
+                        ),
+                      ],
                     ),
                   ],
-                ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    onChanged: (value) =>
+                        setState(() => query = value.trim().toLowerCase()),
+                    decoration: const InputDecoration(
+                      labelText: '搜索选项',
+                      prefixIcon: Icon(Icons.search),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: ListView(children: filtered.map(optionRow).toList()),
+                  ),
+                ],
+                if (error case final message?)
+                  Text(
+                    message,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
               ],
-              const SizedBox(height: 10),
-              TextField(
-                onChanged: (value) =>
-                    setState(() => query = value.trim().toLowerCase()),
-                decoration: const InputDecoration(
-                  labelText: '搜索选项',
-                  prefixIcon: Icon(Icons.search),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Expanded(
-                child: ListView(children: filtered.map(optionRow).toList()),
-              ),
-            ],
-            if (error case final message?)
-              Text(
-                message,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
-              ),
-          ],
+            ),
+          ),
         ),
       ),
       actions: [
@@ -728,8 +849,8 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
           child: const Text('关闭'),
         ),
         FilledButton(
-          onPressed: available.isEmpty ? null : submit,
-          child: const Text('运行'),
+          onPressed: available.isEmpty || probing ? null : submit,
+          child: Text(widget.toolsOnly ? '运行' : '开始下载'),
         ),
       ],
     );

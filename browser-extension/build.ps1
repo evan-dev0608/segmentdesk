@@ -2,7 +2,8 @@ param([string]$OutputDirectory = (Join-Path $PSScriptRoot 'dist'))
 
 $ErrorActionPreference = 'Stop'
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'manifest.json') | ConvertFrom-Json
-$files = @('manifest.json', 'media.mjs', 'worker.js', 'popup.html', 'popup.js')
+$files = @('manifest.json', 'media.mjs', 'worker.js', 'popup.html', 'popup.css', 'popup.js')
+$files += $manifest.icons.PSObject.Properties.Value
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $archive = Join-Path $OutputDirectory "SegmentDesk-Chrome-$($manifest.version).zip"
 $paths = $files | ForEach-Object { Join-Path $PSScriptRoot $_ }
