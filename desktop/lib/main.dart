@@ -826,6 +826,8 @@ class _NewDownloadState extends State<NewDownload> {
               decoration: InputDecoration(
                 labelText: '链接或本地清单',
                 hintText: 'https://…',
+                helperText: '网页视频可用 Chrome 的 SegmentDesk 媒体检测扩展获取清单链接。',
+                helperMaxLines: 2,
                 suffixIcon: IconButton(
                   tooltip: '选择本地清单',
                   icon: const Icon(Icons.file_open_outlined),

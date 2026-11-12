@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "SegmentDesk 媒体检测",
+  "version": "0.1.0",
+  "permissions": ["activeTab", "storage", "webRequest", "clipboardWrite"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {"service_worker": "worker.js", "type": "module"},
+  "action": {"default_popup": "popup.html"}
+}
