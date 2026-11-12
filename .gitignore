@@ -1,0 +1,6 @@
+# Local upstream checkout
+/upstream/
+
+# Python prototype
+__pycache__/
+*.py[cod]
