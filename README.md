@@ -7,6 +7,7 @@
 <p align="center">基于 N_m3u8DL-RE 的 Flutter 流媒体下载桌面客户端</p>
 
 <p align="center">
+  <a href="https://github.com/evan-dev0608/segmentdesk/releases">下载</a> ·
   <a href="docs/usage.md">使用说明</a> ·
   <a href="desktop/README.md">从源码运行</a> ·
   <a href="https://github.com/nilaoda/N_m3u8DL-RE">上游核心</a>
@@ -28,7 +29,7 @@ SegmentDesk 把流媒体下载、任务日志和核心更新放在一个桌面�
 2. 安装 FFmpeg，并确保下载核心能在 PATH 中找到它。
 3. 点击 **新建下载**，粘贴清单链接，选择目录，再点击 **开始下载**。
 
-目前可从源码构建。Windows 构建和启动已验证，macOS 与 Linux 工程已加入，仍待实机验证。详见 [使用说明](docs/usage.md) 和 [构建说明](desktop/README.md)。
+[GitHub Releases](https://github.com/evan-dev0608/segmentdesk/releases) 提供 Windows x64、macOS ARM64 和 Linux x64 预发行包。三端均已通过 CI 构建，macOS 与 Linux 仍待实机验证。详见 [使用说明](docs/usage.md) 和 [构建说明](desktop/README.md)。
 
 ## 当前范围
 
