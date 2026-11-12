@@ -25,7 +25,9 @@ void main() {
       throwsFormatException,
     );
   });
-  testWidgets('settings options open below their field', (tester) async {
+  testWidgets('settings display mode uses visible single-choice options', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       MaterialApp(
         home: SettingsPage(
@@ -39,23 +41,20 @@ void main() {
           coreUpdateStatus: null,
           updatingCore: false,
           onCoreUpdate: null,
+          inspectFFmpegVersion: (_) async => '8.1.1',
           onClientUpdate: () {},
         ),
       ),
     );
-    final field = find.ancestor(
-      of: find.text('跟随系统'),
-      matching: find.byType(InputDecorator),
-    );
-    final bounds = tester.getRect(field);
-    await tester.tap(field);
+    final system = find.widgetWithText(ChoiceChip, '跟随系统');
+    final dark = find.widgetWithText(ChoiceChip, '深色');
+    expect(tester.widget<ChoiceChip>(system).selected, isTrue);
+    await tester.tap(dark);
     await tester.pumpAndSettle();
-    final option = tester.getRect(find.widgetWithText(MenuItemButton, '深色'));
-    expect(option.top, greaterThan(bounds.bottom));
-    await tester.tap(find.widgetWithText(MenuItemButton, '深色'));
-    await tester.pumpAndSettle();
-    expect(find.text('深色'), findsOneWidget);
+    expect(tester.widget<ChoiceChip>(system).selected, isFalse);
+    expect(tester.widget<ChoiceChip>(dark).selected, isTrue);
   });
+
   testWidgets('settings scrollbar is not permanently visible', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -70,6 +69,7 @@ void main() {
           coreUpdateStatus: null,
           updatingCore: false,
           onCoreUpdate: null,
+          inspectFFmpegVersion: (_) async => '8.1.1',
           onClientUpdate: () {},
         ),
       ),
@@ -104,6 +104,7 @@ void main() {
             coreUpdateStatus: null,
             updatingCore: false,
             onCoreUpdate: null,
+            inspectFFmpegVersion: (_) async => '8.1.1',
             onClientUpdate: () {},
           ),
         ),
@@ -121,7 +122,7 @@ void main() {
     },
   );
 
-  testWidgets('install details show a full path without a clipped label', (
+  testWidgets('settings prefill the detected core in an editable path field', (
     tester,
   ) async {
     const executable =
@@ -139,33 +140,21 @@ void main() {
           coreUpdateStatus: null,
           updatingCore: false,
           onCoreUpdate: null,
+          inspectFFmpegVersion: (_) async => '8.1.1',
           onClientUpdate: () {},
         ),
       ),
     );
-    await tester.ensureVisible(find.text('v0.6.0-beta'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('v0.6.0-beta'));
-    await tester.pumpAndSettle();
-    expect(find.text('当前生效路径'), findsOneWidget);
-    expect(
-      tester
-          .widget<SelectableText>(
-            find.widgetWithText(SelectableText, executable),
-          )
-          .data,
-      executable,
+    final field = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField && widget.decoration?.labelText == '核心可执行文件',
     );
-    final label = tester.getRect(find.text('当前生效路径'));
-    final path = tester.getRect(find.widgetWithText(SelectableText, executable));
-    expect(label.bottom, lessThanOrEqualTo(path.top));
-    expect(
-      find.byWidgetPredicate(
-        (widget) =>
-            widget is TextField && widget.decoration?.labelText == '当前生效路径',
-      ),
-      findsNothing,
-    );
+    await tester.ensureVisible(field);
+    expect(tester.widget<TextField>(field).controller?.text, executable);
+    expect(find.text('核心版本 v0.6.0-beta'), findsOneWidget);
+    await tester.enterText(field, 'local-core.exe');
+    await tester.pump();
+    expect(tester.widget<TextField>(field).controller?.text, 'local-core.exe');
   });
 
   test(

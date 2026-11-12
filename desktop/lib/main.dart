@@ -220,7 +220,6 @@ class _WorkspaceState extends State<Workspace> {
   bool preferencesReady = false;
   bool checkingEnvironment = true;
   String? coreUpdateStatus;
-  CoreRelease? pendingCoreRelease;
   String? clientVersion;
   String? clientUpdateStatus;
   String? availableClientTag;
@@ -423,49 +422,29 @@ class _WorkspaceState extends State<Workspace> {
     widget.onPreferencesChanged(value);
   }
 
-  Future<void> update(String proxy) async {
-    if (busy || checkingEnvironment || preferences.corePath.isNotEmpty) return;
-    setState(() => updating = true);
+  Future<CoreInstall?> update() async {
+    if (busy || checkingEnvironment) return null;
+    setState(() {
+      updating = true;
+      coreUpdateStatus = '正在检查可下载的核心…';
+    });
     try {
-      final updateProxy = parseUpdateProxy(proxy);
-      final pending = pendingCoreRelease;
-      if (installed != null && pending == null) {
-        final release = await core.checkUpdate((message) {
-          if (mounted) setState(() => coreUpdateStatus = message);
-        }, proxy: updateProxy);
-        if (mounted) {
-          setState(() {
-            pendingCoreRelease = release;
-            coreUpdateStatus = installed?.tag == release.tag
-                ? '已是当前官方发行版 · ${release.tag}'
-                : '可用官方发行版 · ${release.tag}';
-          });
-        }
-        return;
-      }
-      final value = await core.update(
-        (message) {
-          if (mounted) setState(() => coreUpdateStatus = message);
-        },
-        proxy: updateProxy,
-        release: pending,
-        force:
-            environmentIssue != null ||
-            pending?.tag == installed?.tag && pending != null,
-      );
-      if (mounted) {
-        setState(() {
+      final value = await core.update((message) {
+        if (mounted) setState(() => coreUpdateStatus = message);
+      }, force: preferences.corePath.isEmpty && environmentIssue != null);
+      if (!mounted) return null;
+      setState(() {
+        if (preferences.corePath.isEmpty) {
           installed = value;
           environmentIssue = null;
           noConfigProbe = null;
-          pendingCoreRelease = null;
-          coreUpdateStatus = value.verified
-              ? '核心已就绪 · ${value.tag}'
-              : '核心已就绪 · ${value.tag}（本次未做完整性校验）';
-        });
-      }
+        }
+        coreUpdateStatus = value.verified ? '下载核心已就绪' : '下载核心已就绪（本次未做完整性校验）';
+      });
+      return value;
     } catch (error) {
-      if (mounted) setState(() => coreUpdateStatus = '更新失败：$error');
+      if (mounted) setState(() => coreUpdateStatus = '下载失败：$error');
+      return null;
     } finally {
       if (mounted) setState(() => updating = false);
     }
@@ -519,23 +498,6 @@ class _WorkspaceState extends State<Workspace> {
           uri.host;
     }
     return File(input).uri.pathSegments.last;
-  }
-
-  Future<void> openAdvanced() async {
-    final active = installed;
-    if (active == null || busy || !preferencesReady) return;
-    final ffmpeg = resolveFFmpeg(preferences.ffmpegPath);
-    if (!mounted || busy) return;
-    final request = await showDialog<AdvancedRequest>(
-      context: context,
-      builder: (_) => AdvancedDialog(
-        core: active,
-        directory: Directory(preferences.folder).absolute.path,
-        toolsOnly: true,
-        ffmpeg: ffmpeg,
-      ),
-    );
-    if (request != null && mounted && !busy) await launch(active, request);
   }
 
   Future<void> launch(CoreInstall active, AdvancedRequest request) async {
@@ -803,16 +765,6 @@ class _WorkspaceState extends State<Workspace> {
                 coreUpdateStatus: coreUpdateStatus,
                 updatingCore: updating,
                 onCoreUpdate: busy || checkingEnvironment ? null : update,
-                coreActionLabel: switch (pendingCoreRelease) {
-                  final release? =>
-                    release.tag == installed?.tag
-                        ? '重新安装核心'
-                        : '安装 ${release.tag}',
-                  _ =>
-                    installed == null && environmentIssue != null
-                        ? '重新安装核心'
-                        : null,
-                },
                 onClientUpdate: openClientUpdates,
                 onCheckClientUpdate: checkingClientUpdate
                     ? null
@@ -833,7 +785,6 @@ class _WorkspaceState extends State<Workspace> {
                       checkingEnvironment = true;
                       noConfigProbe = null;
                       coreUpdateStatus = null;
-                      pendingCoreRelease = null;
                     }
                     if (changedFFmpeg) {
                       ffmpegAvailable = resolveFFmpeg(value.ffmpegPath) != null;
@@ -870,18 +821,6 @@ class _WorkspaceState extends State<Workspace> {
                               : createTask,
                           icon: const Icon(Icons.add_rounded),
                           label: const Text('新建下载'),
-                        ),
-                        PopupMenuButton<String>(
-                          tooltip: '更多操作',
-                          enabled:
-                              installed != null && !busy && preferencesReady,
-                          onSelected: (_) => openAdvanced(),
-                          itemBuilder: (_) => const [
-                            PopupMenuItem(
-                              value: 'local-media',
-                              child: Text('处理本地媒体文件'),
-                            ),
-                          ],
                         ),
                       ],
                     ),

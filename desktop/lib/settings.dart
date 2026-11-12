@@ -14,7 +14,6 @@ class Preferences {
     this.themeMode = ThemeMode.system,
     this.accent = 'indigo',
     this.imageSeed,
-    this.updateProxy = '',
     this.corePath = '',
     this.ffmpegPath = '',
   });
@@ -35,7 +34,6 @@ class Preferences {
   final ThemeMode themeMode;
   final String accent;
   final int? imageSeed;
-  final String updateProxy;
   final String corePath;
   final String ffmpegPath;
   Color get seed => imageSeed == null ? accents[accent]!.$2 : Color(imageSeed!);
@@ -85,11 +83,6 @@ class Preferences {
           value,
         _ => null,
       },
-      updateProxy:
-          data['updateProxy'] is String &&
-              parseUpdateProxy(data['updateProxy'] as String) != null
-          ? data['updateProxy'] as String
-          : '',
       corePath: data['corePath'] is String
           ? (data['corePath'] as String).trim()
           : '',
@@ -111,7 +104,6 @@ class Preferences {
           'themeMode': themeMode.name,
           'accent': accent,
           if (imageSeed != null) 'imageSeed': imageSeed,
-          'updateProxy': updateProxy,
           if (corePath.isNotEmpty) 'corePath': corePath,
           if (ffmpegPath.isNotEmpty) 'ffmpegPath': ffmpegPath,
         }),
@@ -138,11 +130,11 @@ class SettingsPage extends StatefulWidget {
     required this.updatingCore,
     required this.onCoreUpdate,
     required this.onClientUpdate,
+    this.inspectFFmpegVersion = inspectFFmpeg,
     this.onCheckClientUpdate,
     this.clientVersion,
     this.clientUpdateStatus,
     this.clientUpdateAvailable = false,
-    this.coreActionLabel,
   });
 
   final Preferences initial;
@@ -154,13 +146,13 @@ class SettingsPage extends StatefulWidget {
   final bool? ffmpegAvailable;
   final String? coreUpdateStatus;
   final bool updatingCore;
-  final ValueChanged<String>? onCoreUpdate;
+  final Future<CoreInstall?> Function()? onCoreUpdate;
   final VoidCallback onClientUpdate;
+  final Future<String> Function(String) inspectFFmpegVersion;
   final VoidCallback? onCheckClientUpdate;
   final String? clientVersion;
   final String? clientUpdateStatus;
   final bool clientUpdateAvailable;
-  final String? coreActionLabel;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -173,26 +165,101 @@ class _SettingsPageState extends State<SettingsPage> {
   late ThemeMode themeMode = widget.initial.themeMode;
   late String accent = widget.initial.accent;
   late int? imageSeed = widget.initial.imageSeed;
-  late final proxy = TextEditingController(text: widget.initial.updateProxy);
-  late final corePath = TextEditingController(text: widget.initial.corePath);
-  late final ffmpegPath = TextEditingController(
-    text: widget.initial.ffmpegPath,
-  );
-  late bool customCore = widget.initial.corePath.isNotEmpty;
-  String? ffmpegResult;
-  bool testingFFmpeg = false;
+  CoreInstall? downloadedCore;
+  bool corePathEdited = false;
 
-  Future<void> testFFmpeg() async {
-    setState(() => testingFFmpeg = true);
+  @override
+  void didUpdateWidget(covariant SettingsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!corePathEdited &&
+        widget.initial.corePath.isEmpty &&
+        widget.core != oldWidget.core) {
+      corePath.text = widget.core?.executable ?? '';
+    }
+  }
+
+  late final corePath = TextEditingController(
+    text: widget.initial.corePath.isEmpty
+        ? widget.core?.executable ?? ''
+        : widget.initial.corePath,
+  );
+
+  String get configuredCorePath {
+    final value = corePath.text.trim();
+    final managedPath =
+        downloadedCore?.executable ??
+        (widget.initial.corePath.isEmpty ? widget.core?.executable : null);
+    return value == managedPath ? '' : value;
+  }
+
+  Future<void> downloadCore() async {
+    final value = await widget.onCoreUpdate!();
+    if (!mounted || value == null) return;
+    setState(() {
+      downloadedCore = value;
+      corePath.text = value.executable;
+    });
+  }
+
+  late final String detectedFFmpegPath = resolveFFmpeg('') ?? '';
+  late final ffmpegPath = TextEditingController(
+    text: widget.initial.ffmpegPath.isEmpty
+        ? detectedFFmpegPath
+        : widget.initial.ffmpegPath,
+  );
+
+  String get configuredFFmpegPath {
+    final value = ffmpegPath.text.trim();
+    return value == detectedFFmpegPath ? '' : value;
+  }
+
+  String? ffmpegVersion;
+  String? versionedFFmpegPath;
+
+  @override
+  void initState() {
+    super.initState();
+    final path = resolveFFmpeg(widget.initial.ffmpegPath);
+    if (path != null) readFFmpegVersion(path);
+  }
+
+  Future<void> readFFmpegVersion(String path) async {
     try {
-      final path = resolveFFmpeg(ffmpegPath.text.trim());
-      if (path == null) throw const FormatException('未找到 FFmpeg 可执行文件。');
-      final version = await inspectFFmpeg(path);
-      if (mounted) setState(() => ffmpegResult = 'FFmpeg $version\n$path');
+      final version = await widget.inspectFFmpegVersion(path);
+      if (mounted && ffmpegPath.text.trim() == path) {
+        setState(() {
+          ffmpegVersion = version;
+          versionedFFmpegPath = path;
+        });
+      }
+    } on Exception {
+      // A path may become unavailable while the settings page is open.
+    }
+  }
+
+  bool downloadingFFmpeg = false;
+  String? ffmpegDownloadStatus;
+
+  Future<void> installFFmpeg() async {
+    setState(() {
+      downloadingFFmpeg = true;
+      ffmpegDownloadStatus = '正在准备下载 FFmpeg…';
+    });
+    try {
+      final path = await downloadFFmpeg((message) {
+        if (mounted) setState(() => ffmpegDownloadStatus = message);
+      });
+      if (mounted) {
+        setState(() {
+          ffmpegPath.text = path;
+          ffmpegDownloadStatus = null;
+        });
+        await readFFmpegVersion(path);
+      }
     } catch (exception) {
-      if (mounted) setState(() => ffmpegResult = '检测失败：$exception');
+      if (mounted) setState(() => ffmpegDownloadStatus = '下载失败：$exception');
     } finally {
-      if (mounted) setState(() => testingFFmpeg = false);
+      if (mounted) setState(() => downloadingFFmpeg = false);
     }
   }
 
@@ -226,7 +293,6 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void dispose() {
     folder.dispose();
-    proxy.dispose();
     corePath.dispose();
     ffmpegPath.dispose();
     super.dispose();
@@ -236,6 +302,7 @@ class _SettingsPageState extends State<SettingsPage> {
     if (saving ||
         readingImage ||
         widget.updatingCore ||
+        downloadingFFmpeg ||
         !form.currentState!.validate()) {
       return;
     }
@@ -245,9 +312,8 @@ class _SettingsPageState extends State<SettingsPage> {
       themeMode: themeMode,
       accent: accent,
       imageSeed: imageSeed,
-      updateProxy: proxy.text.trim(),
-      corePath: customCore ? corePath.text.trim() : '',
-      ffmpegPath: ffmpegPath.text.trim(),
+      corePath: configuredCorePath,
+      ffmpegPath: configuredFFmpegPath,
     );
     setState(() {
       saving = true;
@@ -345,7 +411,7 @@ class _SettingsPageState extends State<SettingsPage> {
                             children: [
                               Text('外观', style: theme.textTheme.titleSmall),
                               const SizedBox(height: 12),
-                              _SettingsSelect<ThemeMode>(
+                              _SettingsChoices<ThemeMode>(
                                 label: '显示模式',
                                 value: themeMode,
                                 options: Preferences.modes,
@@ -425,10 +491,11 @@ class _SettingsPageState extends State<SettingsPage> {
                                 ),
                               ),
                               const SizedBox(height: 16),
-                              _SettingsSelect<String>(
+                              _SettingsChoices<String>(
                                 label: '下载完成后混流',
                                 value: container,
                                 options: Preferences.containers,
+                                optionWidth: 144,
                                 onChanged: saving
                                     ? null
                                     : (value) =>
@@ -436,299 +503,45 @@ class _SettingsPageState extends State<SettingsPage> {
                               ),
                               const SizedBox(height: 24),
                               const Divider(),
-                              Text('下载核心', style: theme.textTheme.titleSmall),
-                              const SizedBox(height: 12),
-                              _SettingsSelect<bool>(
-                                label: '核心来源',
-                                value: customCore,
-                                options: const {false: '托管核心', true: '自定义核心'},
-                                onChanged: saving || widget.updatingCore
+                              _ExecutableSetting(
+                                title: '下载核心',
+                                controller: corePath,
+                                busy: widget.updatingCore,
+                                disabled: saving,
+                                onPathChanged: () =>
+                                    setState(() => corePathEdited = true),
+                                onDownload: widget.onCoreUpdate == null
                                     ? null
-                                    : (value) =>
-                                          setState(() => customCore = value),
-                              ),
-                              const SizedBox(height: 12),
-                              if (!customCore)
-                                TextFormField(
-                                  controller: proxy,
-                                  enabled: !saving,
-                                  decoration: const InputDecoration(
-                                    labelText: '核心更新代理（可选）',
-                                    hintText: 'http://127.0.0.1:7890',
-                                    helperText: '仅用于从 GitHub 安装和更新核心。',
-                                  ),
-                                  validator: (value) {
-                                    if (value == null || value.trim().isEmpty) {
-                                      return null;
-                                    }
-                                    return parseUpdateProxy(value) == null
-                                        ? '请输入包含协议、主机和端口的代理地址'
-                                        : null;
-                                  },
-                                ),
-                              const SizedBox(height: 8),
-                              if (customCore)
-                                TextFormField(
-                                  controller: corePath,
-                                  enabled: !saving && !widget.updatingCore,
-                                  decoration: InputDecoration(
-                                    labelText: '自定义核心路径',
-                                    suffixIcon: IconButton(
-                                      tooltip: '选择核心可执行文件',
-                                      icon: const Icon(
-                                        Icons.folder_open_outlined,
-                                      ),
-                                      onPressed: saving || widget.updatingCore
-                                          ? null
-                                          : () async {
-                                              final selected = await openFile();
-                                              if (mounted &&
-                                                  selected != null &&
-                                                  !saving) {
-                                                corePath.text = selected.path;
-                                              }
-                                            },
-                                    ),
-                                  ),
-                                  validator: (value) =>
-                                      value == null || value.trim().isEmpty
-                                      ? '请选择核心可执行文件'
-                                      : null,
-                                ),
-                              const SizedBox(height: 8),
-                              _EnvironmentPanel(
-                                children: [
-                                  if (widget.core case final installed?)
-                                    ExpansionTile(
-                                      tilePadding: EdgeInsets.zero,
-                                      shape: const Border(),
-                                      collapsedShape: const Border(),
-                                      title: Wrap(
-                                        spacing: 10,
-                                        runSpacing: 4,
-                                        crossAxisAlignment:
-                                            WrapCrossAlignment.center,
-                                        children: [
-                                          const Text('核心版本'),
-                                          Text(
-                                            installed.tag,
-                                            style: theme.textTheme.titleSmall,
-                                          ),
-                                        ],
-                                      ),
-                                      subtitle: Text(
-                                        widget.initial.corePath.isEmpty
-                                            ? '托管核心 · 查看安装路径'
-                                            : '自定义核心 · 查看安装路径',
-                                        style: theme.textTheme.bodySmall
-                                            ?.copyWith(
-                                              color: theme
-                                                  .colorScheme
-                                                  .onSurfaceVariant,
-                                            ),
-                                      ),
-                                      // 展开内容默认紧贴标题（childrenPadding 为零），
-                                      // 输入框的浮动标签会被挤到边框线上。这里改成
-                                      // 撑满宽度 + 显式标题 + 可换行复制的路径文本。
-                                      expandedCrossAxisAlignment:
-                                          CrossAxisAlignment.stretch,
-                                      childrenPadding: const EdgeInsets.only(
-                                        top: 8,
-                                        bottom: 12,
-                                      ),
-                                      children: [
-                                        Padding(
-                                          padding: const EdgeInsets.only(
-                                            bottom: 6,
-                                          ),
-                                          child: Text(
-                                            '当前生效路径',
-                                            style: theme.textTheme.labelMedium,
-                                          ),
-                                        ),
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 12,
-                                            vertical: 10,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: theme
-                                                .colorScheme
-                                                .surfaceContainerHighest
-                                                .withValues(alpha: 0.55),
-                                            borderRadius: BorderRadius.circular(
-                                              8,
-                                            ),
-                                            border: Border.all(
-                                              color: theme
-                                                  .colorScheme
-                                                  .outlineVariant,
-                                            ),
-                                          ),
-                                          child: SelectableText(
-                                            installed.executable,
-                                            style: theme.textTheme.bodySmall
-                                                ?.copyWith(
-                                                  color: theme
-                                                      .colorScheme
-                                                      .onSurfaceVariant,
-                                                ),
-                                          ),
-                                        ),
-                                      ],
-                                    )
-                                  else
-                                    Text(
-                                      widget.checkingEnvironment
-                                          ? '正在检查下载环境…'
-                                          : widget.environmentIssue ?? '未安装',
-                                    ),
-                                  if (!customCore)
-                                    Align(
-                                      alignment: Alignment.centerRight,
-                                      child: OutlinedButton.icon(
-                                        onPressed:
-                                            widget.onCoreUpdate == null ||
-                                                widget
-                                                    .initial
-                                                    .corePath
-                                                    .isNotEmpty
-                                            ? null
-                                            : () {
-                                                final value = proxy.text.trim();
-                                                if (value.isNotEmpty &&
-                                                    parseUpdateProxy(value) ==
-                                                        null) {
-                                                  form.currentState?.validate();
-                                                  return;
-                                                }
-                                                widget.onCoreUpdate!(value);
-                                              },
-                                        icon: const Icon(
-                                          Icons.system_update_alt,
-                                        ),
-                                        label: Text(
-                                          widget.coreActionLabel ??
-                                              (widget.core == null
-                                                  ? '安装核心'
-                                                  : '检查核心更新'),
-                                        ),
-                                      ),
-                                    ),
-                                  if (widget.updatingCore ||
-                                      widget.coreUpdateStatus != null) ...[
-                                    const SizedBox(height: 16),
-                                    Semantics(
-                                      liveRegion: true,
-                                      child: Text(
-                                        widget.coreUpdateStatus ?? '正在准备核心更新…',
-                                        style: theme.textTheme.bodySmall,
-                                      ),
-                                    ),
-                                    if (widget.updatingCore) ...[
-                                      const SizedBox(height: 8),
-                                      const LinearProgressIndicator(
-                                        borderRadius: BorderRadius.all(
-                                          Radius.circular(4),
-                                        ),
-                                      ),
-                                    ],
-                                  ],
-                                ],
+                                    : downloadCore,
+                                status:
+                                    widget.coreUpdateStatus ??
+                                    widget.environmentIssue ??
+                                    (widget.checkingEnvironment
+                                        ? '正在检查下载环境…'
+                                        : (downloadedCore ?? widget.core)
+                                                  ?.executable ==
+                                              corePath.text.trim()
+                                        ? '核心版本 ${(downloadedCore ?? widget.core)!.tag}'
+                                        : null),
                               ),
                               const SizedBox(height: 24),
                               const Divider(),
-                              Text('FFmpeg', style: theme.textTheme.titleSmall),
-                              const SizedBox(height: 12),
-                              TextFormField(
+                              _ExecutableSetting(
+                                title: 'FFmpeg',
                                 controller: ffmpegPath,
-                                enabled: !saving && !testingFFmpeg,
-                                onChanged: (_) =>
-                                    setState(() => ffmpegResult = null),
-                                decoration: InputDecoration(
-                                  labelText: 'FFmpeg 可执行文件',
-                                  helperText: '留空时从 PATH 自动查找。',
-                                  suffixIcon: IconButton(
-                                    tooltip: '选择 FFmpeg',
-                                    icon: const Icon(
-                                      Icons.folder_open_outlined,
-                                    ),
-                                    onPressed: saving || testingFFmpeg
-                                        ? null
-                                        : () async {
-                                            final selected = await openFile();
-                                            if (mounted &&
-                                                selected != null &&
-                                                !saving) {
-                                              setState(() {
-                                                ffmpegPath.text = selected.path;
-                                                ffmpegResult = null;
-                                              });
-                                            }
-                                          },
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              _EnvironmentPanel(
-                                children: [
-                                  if (ffmpegResult case final result?)
-                                    SelectableText(
-                                      result,
-                                      style: theme.textTheme.bodySmall,
-                                    )
-                                  else if (widget.ffmpegAvailable == false)
-                                    const Text('未找到 FFmpeg，请指定路径。')
-                                  else if (resolveFFmpeg(
-                                        widget.initial.ffmpegPath,
-                                      )
-                                      case final path?)
-                                    Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          widget.initial.ffmpegPath.isEmpty
-                                              ? '自动查找 · PATH'
-                                              : '自定义路径',
-                                          style: theme.textTheme.titleSmall,
-                                        ),
-                                        const SizedBox(height: 4),
-                                        SelectableText(
-                                          path,
-                                          style: theme.textTheme.bodySmall,
-                                        ),
-                                      ],
-                                    ),
-                                  const SizedBox(height: 16),
-                                  Wrap(
-                                    alignment: WrapAlignment.end,
-                                    spacing: 8,
-                                    runSpacing: 4,
-                                    children: [
-                                      OutlinedButton(
-                                        onPressed: saving || testingFFmpeg
-                                            ? null
-                                            : testFFmpeg,
-                                        child: Text(
-                                          testingFFmpeg ? '正在测试…' : '测试 FFmpeg',
-                                        ),
-                                      ),
-                                      if (ffmpegPath.text.trim().isNotEmpty)
-                                        TextButton(
-                                          onPressed: saving || testingFFmpeg
-                                              ? null
-                                              : () {
-                                                  setState(() {
-                                                    ffmpegPath.clear();
-                                                    ffmpegResult = null;
-                                                  });
-                                                },
-                                          child: const Text('恢复自动查找'),
-                                        ),
-                                    ],
-                                  ),
-                                ],
+                                busy: downloadingFFmpeg,
+                                disabled: saving,
+                                onDownload: canDownloadFFmpeg
+                                    ? installFFmpeg
+                                    : null,
+                                onPathChanged: () => setState(() {}),
+                                status:
+                                    ffmpegDownloadStatus ??
+                                    (ffmpegVersion != null &&
+                                            versionedFFmpegPath ==
+                                                ffmpegPath.text.trim()
+                                        ? 'FFmpeg 版本 $ffmpegVersion'
+                                        : null),
                               ),
                               const SizedBox(height: 24),
                               const Divider(),
@@ -751,7 +564,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                     ),
                                   const SizedBox(height: 8),
                                   Wrap(
-                                    alignment: WrapAlignment.end,
+                                    alignment: WrapAlignment.start,
                                     spacing: 8,
                                     runSpacing: 4,
                                     children: [
@@ -760,12 +573,15 @@ class _SettingsPageState extends State<SettingsPage> {
                                         icon: const Icon(Icons.refresh),
                                         label: const Text('检查客户端更新'),
                                       ),
-                                      if (widget.clientUpdateAvailable)
-                                        TextButton.icon(
-                                          onPressed: widget.onClientUpdate,
-                                          icon: const Icon(Icons.open_in_new),
-                                          label: const Text('前往下载'),
+                                      TextButton.icon(
+                                        onPressed: widget.onClientUpdate,
+                                        icon: const Icon(Icons.open_in_new),
+                                        label: Text(
+                                          widget.clientUpdateAvailable
+                                              ? '前往下载'
+                                              : '打开发布页',
                                         ),
+                                      ),
                                     ],
                                   ),
                                 ],
@@ -802,12 +618,20 @@ class _SettingsPageState extends State<SettingsPage> {
                           mainAxisAlignment: MainAxisAlignment.end,
                           children: [
                             TextButton(
-                              onPressed: saving ? null : widget.onClose,
+                              onPressed:
+                                  saving ||
+                                      downloadingFFmpeg ||
+                                      widget.updatingCore
+                                  ? null
+                                  : widget.onClose,
                               child: const Text('取消'),
                             ),
                             FilledButton(
                               onPressed:
-                                  saving || readingImage || widget.updatingCore
+                                  saving ||
+                                      readingImage ||
+                                      widget.updatingCore ||
+                                      downloadingFFmpeg
                                   ? null
                                   : save,
                               child: Text(saving ? '正在保存…' : '保存设置'),
@@ -823,6 +647,76 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ExecutableSetting extends StatelessWidget {
+  const _ExecutableSetting({
+    required this.title,
+    required this.controller,
+    required this.busy,
+    required this.disabled,
+    required this.onDownload,
+    this.onPathChanged,
+    this.status,
+  });
+
+  final String title;
+  final TextEditingController controller;
+  final bool busy;
+  final bool disabled;
+  final VoidCallback? onDownload;
+  final VoidCallback? onPathChanged;
+  final String? status;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final enabled = !busy && !disabled;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: theme.textTheme.titleSmall),
+        const SizedBox(height: 12),
+        TextFormField(
+          controller: controller,
+          enabled: enabled,
+          onChanged: (_) => onPathChanged?.call(),
+          decoration: InputDecoration(
+            labelText: title == '下载核心' ? '核心可执行文件' : 'FFmpeg 可执行文件',
+            suffixIcon: IconButton(
+              tooltip: '选择本地文件',
+              icon: const Icon(Icons.folder_open_outlined),
+              onPressed: enabled
+                  ? () async {
+                      final selected = await openFile();
+                      if (!context.mounted || selected == null) return;
+                      controller.text = selected.path;
+                      onPathChanged?.call();
+                    }
+                  : null,
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: enabled ? onDownload : null,
+          icon: const Icon(Icons.system_update_alt),
+          label: const Text('在线下载'),
+        ),
+        if (status case final message?) ...[
+          const SizedBox(height: 8),
+          Semantics(
+            liveRegion: true,
+            child: Text(message, style: theme.textTheme.bodySmall),
+          ),
+        ],
+        if (busy) ...[
+          const SizedBox(height: 8),
+          const LinearProgressIndicator(),
+        ],
+      ],
     );
   }
 }
@@ -850,74 +744,65 @@ class _EnvironmentPanel extends StatelessWidget {
   }
 }
 
-class _SettingsSelect<T> extends StatelessWidget {
-  const _SettingsSelect({
+class _SettingsChoices<T> extends StatelessWidget {
+  const _SettingsChoices({
     required this.label,
     required this.value,
     required this.options,
     required this.onChanged,
+    this.optionWidth,
   });
 
   final String label;
+  final double? optionWidth;
   final T value;
   final Map<T, String> options;
   final ValueChanged<T>? onChanged;
 
   @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return LayoutBuilder(
-      builder: (context, constraints) => MenuAnchor(
-        alignmentOffset: const Offset(0, 6),
-        style: MenuStyle(
-          alignment: Alignment.bottomLeft,
-          minimumSize: WidgetStatePropertyAll(Size(constraints.maxWidth, 0)),
-          backgroundColor: WidgetStatePropertyAll(colors.surfaceContainerHigh),
-          shape: WidgetStatePropertyAll(
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        ),
-        menuChildren: [
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(label, style: Theme.of(context).textTheme.labelLarge),
+      const SizedBox(height: 6),
+      Wrap(
+        spacing: 8,
+        runSpacing: 6,
+        children: [
           for (final entry in options.entries)
-            MenuItemButton(
-              leadingIcon: Icon(
-                entry.key == value ? Icons.check : null,
-                size: 18,
-              ),
-              onPressed: onChanged == null ? null : () => onChanged!(entry.key),
-              child: Text(entry.value),
-            ),
-        ],
-        builder: (context, controller, _) => Semantics(
-          button: true,
-          child: InkWell(
-            borderRadius: BorderRadius.circular(4),
-            onTap: onChanged == null
-                ? null
-                : () => controller.isOpen
-                      ? controller.close()
-                      : controller.open(),
-            child: InputDecorator(
-              decoration: InputDecoration(
-                labelText: label,
-                enabled: onChanged != null,
-                floatingLabelBehavior: FloatingLabelBehavior.always,
-              ),
-              isFocused: controller.isOpen,
-              child: Row(
-                children: [
-                  Expanded(child: Text(options[value] ?? '')),
-                  Icon(
-                    controller.isOpen
-                        ? Icons.arrow_drop_up
-                        : Icons.arrow_drop_down,
+            if (optionWidth case final width?)
+              Semantics(
+                selected: entry.key == value,
+                child: SizedBox(
+                  width: MediaQuery.textScalerOf(context).scale(width),
+                  child: OutlinedButton(
+                    style: entry.key == value
+                        ? OutlinedButton.styleFrom(
+                            backgroundColor: Theme.of(context)
+                                .colorScheme
+                                .secondaryContainer,
+                            foregroundColor: Theme.of(context)
+                                .colorScheme
+                                .onSecondaryContainer,
+                          )
+                        : null,
+                    onPressed: onChanged == null
+                        ? null
+                        : () => onChanged!(entry.key),
+                    child: Text(entry.value, textAlign: TextAlign.center),
                   ),
-                ],
+                ),
+              )
+            else
+              ChoiceChip(
+                label: Text(entry.value),
+                selected: entry.key == value,
+                onSelected: onChanged == null
+                    ? null
+                    : (_) => onChanged!(entry.key),
               ),
-            ),
-          ),
-        ),
+        ],
       ),
-    );
-  }
+    ],
+  );
 }

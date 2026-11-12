@@ -57,7 +57,9 @@ abstract class CoreRunner {
 }
 
 class SystemCoreRunner implements CoreRunner {
-  const SystemCoreRunner();
+  const SystemCoreRunner({this.downloadTimeoutSeconds = 90});
+
+  final int downloadTimeoutSeconds;
 
   @override
   Future<ProcessResult> run(String executable, List<String> arguments) =>
@@ -79,7 +81,7 @@ class SystemCoreRunner implements CoreRunner {
       '--connect-timeout',
       '10',
       '--max-time',
-      '90',
+      downloadTimeoutSeconds.toString(),
       '--user-agent',
       'StreamDownloadGUI',
       '--output',
