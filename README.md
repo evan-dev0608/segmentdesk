@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/segmentdesk.png" width="112" height="112" alt="SegmentDesk">
+</p>
+
 <h1 align="center">SegmentDesk</h1>
 
 <p align="center">基于 N_m3u8DL-RE 的 Flutter 流媒体下载桌面客户端</p>
