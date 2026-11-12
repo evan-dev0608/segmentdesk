@@ -15,6 +15,19 @@
 
 SegmentDesk 把流媒体下载、任务日志和核心更新放在一个桌面窗口里。粘贴 HLS、DASH 或 MSS 清单链接，选择保存目录，就可以发起下载。下载能力由 [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE) 的官方发行包提供，核心可在客户端内独立更新。
 
+## 界面预览
+
+**下载工作台**可以筛选任务、查看下载状态和日志，也可以打开输出目录或移除已结束的任务记录。
+
+![SegmentDesk Windows 下载工作台与示例任务日志](docs/assets/workspace-windows.png)
+
+| 浏览器导入确认 | 高级下载选项 |
+| --- | --- |
+| <img src="docs/assets/browser-import-windows.png" width="460" alt="浏览器链接预填到确认下载弹窗"> | <img src="docs/assets/advanced-windows.png" width="460" alt="轨道预览、IPTV 和高级参数搜索"> |
+| 确认清单链接、保存目录和文件名。 | 读取轨道、选择 IPTV 频道，或搜索当前核心提供的参数。 |
+
+截图来自 Windows 上的 SegmentDesk，个人目录已遮盖。
+
 ## 功能
 
 - **下载工作台** · 添加链接或本地清单，查看任务阶段和日志，打开输出目录或重试失败任务。
@@ -31,6 +44,14 @@ SegmentDesk 把流媒体下载、任务日志和核心更新放在一个桌面�
 3. 点击 **新建下载**，粘贴清单链接，选择目录，再点击 **开始下载**。
 
 [GitHub Releases](https://github.com/evan-dev0608/segmentdesk/releases) 提供 Windows x64、macOS ARM64 和 Linux x64 预发行包。Windows 提供安装版和免安装 ZIP，首次使用推荐安装版。三端均已通过 CI 构建，macOS 与 Linux 仍待实机验证。详见 [使用说明](docs/usage.md) 和 [构建说明](desktop/README.md)。
+
+## 从 Chrome 发送到客户端
+
+1. 按 [扩展安装说明](browser-extension/README.md) 加载 SegmentDesk 媒体检测扩展。
+2. 打开视频网页，在扩展中点击 **开始检测**，然后播放视频。检测到 HLS 主清单时，优先选择标有 **可选画质** 的结果。
+3. 点击 **发送到客户端**，在 SegmentDesk 的 **确认下载** 弹窗检查链接和保存位置。需要手动选轨时，打开 **高级选项 → 读取轨道**。
+
+一键导入是开发版功能，需要包含 Chrome 通信宿主的 Windows 安装版。使用旧版客户端时，可以在扩展里 **复制** 链接，再粘贴到桌面客户端。实际可下载的资源类型取决于已安装的下载核心。
 
 ## 在 GUI 中使用上游参数
 
