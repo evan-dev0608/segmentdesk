@@ -31,6 +31,20 @@ SegmentDesk 把流媒体下载、任务日志和核心更新放在一个桌面�
 
 [GitHub Releases](https://github.com/evan-dev0608/segmentdesk/releases) 提供 Windows x64、macOS ARM64 和 Linux x64 预发行包。Windows 提供安装版和免安装 ZIP，首次使用推荐安装版。三端均已通过 CI 构建，macOS 与 Linux 仍待实机验证。详见 [使用说明](docs/usage.md) 和 [构建说明](desktop/README.md)。
 
+## 在 GUI 中使用上游参数
+
+**设置 → 下载偏好**管理普通下载的默认目录和混流格式。需要为某次任务配置请求头、轨道筛选、限速或录制时长时，打开左侧 **选项与工具**，在搜索框输入参数名或说明，再填写对应控件。
+
+| 想做什么 | 在「选项与工具」中查找 |
+| --- | --- |
+| 给清单和分片请求附加 Referer、User-Agent 等请求头 | `--header` |
+| 设置代理、下载线程、重试次数和限速 | `--custom-proxy`、`--thread-count`、`--download-retry-count`、`--max-speed` |
+| 仅下载字幕，或按规则选择视频、音频和字幕 | `--sub-only`、`--select-video`、`--select-audio`、`--select-subtitle` |
+| 下载一段范围，或限制直播录制时长 | `--custom-range`、`--live-record-limit` |
+| 自定义混流或附加字幕文件 | `--mux-after-done`、`--mux-import` |
+
+表单以已安装核心的帮助为准。参数值和可用范围详见 [GUI 填写示例](docs/usage.md#本地清单与高级选项)和 [上游命令行文档](https://github.com/nilaoda/N_m3u8DL-RE#命令行参数)。
+
 ## 当前范围
 
 客户端每次运行一个任务。图形化选轨、点播选段和 IPTV 频道选择仍在迁移。高级参数及文件工具的可用范围取决于已安装的核心版本。
