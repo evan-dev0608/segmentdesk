@@ -5,7 +5,7 @@ $manifest = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'manifest.jso
 $files = @('manifest.json', 'media.mjs', 'worker.js', 'popup.html', 'popup.css', 'popup.js')
 $files += $manifest.icons.PSObject.Properties.Value
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
-$archive = Join-Path $OutputDirectory "SegmentDesk-Chrome-$($manifest.version).zip"
+$archive = Join-Path $OutputDirectory "SegmentDesk-Chrome-Extension-$($manifest.version).zip"
 $paths = $files | ForEach-Object { Join-Path $PSScriptRoot $_ }
 Compress-Archive -LiteralPath $paths -DestinationPath $archive -Force
 Get-Item -LiteralPath $archive

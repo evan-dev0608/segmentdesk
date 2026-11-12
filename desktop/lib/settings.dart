@@ -615,14 +615,25 @@ class _SettingsPageState extends State<SettingsPage> {
                                         ),
                                       ),
                                     ),
-                                  if (widget.updatingCore)
-                                    const LinearProgressIndicator(),
-                                  if (widget.coreUpdateStatus
-                                      case final message?)
-                                    Text(
-                                      message,
-                                      style: theme.textTheme.bodySmall,
+                                  if (widget.updatingCore ||
+                                      widget.coreUpdateStatus != null) ...[
+                                    const SizedBox(height: 16),
+                                    Semantics(
+                                      liveRegion: true,
+                                      child: Text(
+                                        widget.coreUpdateStatus ?? '正在准备核心更新…',
+                                        style: theme.textTheme.bodySmall,
+                                      ),
                                     ),
+                                    if (widget.updatingCore) ...[
+                                      const SizedBox(height: 8),
+                                      const LinearProgressIndicator(
+                                        borderRadius: BorderRadius.all(
+                                          Radius.circular(4),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
                                 ],
                               ),
                               const SizedBox(height: 24),
