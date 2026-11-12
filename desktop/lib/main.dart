@@ -521,7 +521,7 @@ class _WorkspaceState extends State<Workspace> {
     return File(input).uri.pathSegments.last;
   }
 
-  Future<void> openAdvanced({String? folder}) async {
+  Future<void> openAdvanced() async {
     final active = installed;
     if (active == null || busy || !preferencesReady) return;
     final ffmpeg = resolveFFmpeg(preferences.ffmpegPath);
@@ -530,7 +530,7 @@ class _WorkspaceState extends State<Workspace> {
       context: context,
       builder: (_) => AdvancedDialog(
         core: active,
-        directory: Directory(folder ?? preferences.folder).absolute.path,
+        directory: Directory(preferences.folder).absolute.path,
         toolsOnly: true,
         ffmpeg: ffmpeg,
       ),
@@ -983,57 +983,47 @@ class _WorkspaceState extends State<Workspace> {
                                               ? colors.errorContainer
                                               : colors.secondaryContainer,
                                         ),
-                                        if (task.state.startsWith('已完成'))
-                                          IconButton(
-                                            tooltip: '打开文件夹',
-                                            icon: const Icon(
-                                              Icons.folder_open_outlined,
-                                            ),
-                                            onPressed: () =>
-                                                openTaskFolder(task),
-                                          ),
-                                        if (task.state.startsWith('已完成'))
-                                          PopupMenuButton<String>(
-                                            tooltip: '任务更多操作',
-                                            enabled:
-                                                installed != null &&
-                                                !busy &&
-                                                preferencesReady,
-                                            onSelected: (_) => openAdvanced(
-                                              folder: task.folder,
-                                            ),
-                                            itemBuilder: (_) => const [
-                                              PopupMenuItem(
-                                                value: 'local-media',
-                                                child: Text('处理输出目录中的媒体'),
-                                              ),
-                                            ],
-                                          ),
-                                        IconButton(
-                                          tooltip: task.running
-                                              ? '停止任务后可移除'
-                                              : '从列表移除任务',
-                                          icon: const Icon(
-                                            Icons.delete_outline,
-                                          ),
-                                          onPressed: task.running
+                                        const SizedBox(width: 8),
+                                        SizedBox(
+                                          width: 40,
+                                          child: task.state.startsWith('已完成')
+                                              ? IconButton(
+                                                  tooltip: '打开文件夹',
+                                                  icon: const Icon(
+                                                    Icons.folder_open_outlined,
+                                                  ),
+                                                  onPressed: () =>
+                                                      openTaskFolder(task),
+                                                )
+                                              : null,
+                                        ),
+                                        SizedBox(
+                                          width: 40,
+                                          child: task.running
                                               ? null
-                                              : () => setState(() {
-                                                  tasks.remove(task);
-                                                  if (identical(
-                                                    selected,
-                                                    task,
-                                                  )) {
-                                                    selected = visible
-                                                        .where(
-                                                          (item) => !identical(
-                                                            item,
-                                                            task,
-                                                          ),
-                                                        )
-                                                        .firstOrNull;
-                                                  }
-                                                }),
+                                              : IconButton(
+                                                  tooltip: '从列表移除任务',
+                                                  icon: const Icon(
+                                                    Icons.delete_outline,
+                                                  ),
+                                                  onPressed: () => setState(() {
+                                                    tasks.remove(task);
+                                                    if (identical(
+                                                      selected,
+                                                      task,
+                                                    )) {
+                                                      selected = visible
+                                                          .where(
+                                                            (item) =>
+                                                                !identical(
+                                                                  item,
+                                                                  task,
+                                                                ),
+                                                          )
+                                                          .firstOrNull;
+                                                    }
+                                                  }),
+                                                ),
                                         ),
                                       ],
                                     ),

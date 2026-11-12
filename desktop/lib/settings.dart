@@ -496,67 +496,30 @@ class _SettingsPageState extends State<SettingsPage> {
                                       : null,
                                 ),
                               const SizedBox(height: 8),
-                              if (widget.core case final installed?)
-                                ExpansionTile(
-                                  tilePadding: EdgeInsets.zero,
-                                  shape: const Border(),
-                                  collapsedShape: const Border(),
-                                  title: Wrap(
-                                    spacing: 10,
-                                    runSpacing: 4,
-                                    crossAxisAlignment:
-                                        WrapCrossAlignment.center,
-                                    children: [
-                                      const Text('核心版本'),
-                                      Text(
-                                        installed.tag,
-                                        style: theme.textTheme.titleSmall,
+                              _EnvironmentPanel(
+                                children: [
+                                  if (widget.core case final installed?)
+                                    ExpansionTile(
+                                      tilePadding: EdgeInsets.zero,
+                                      shape: const Border(),
+                                      collapsedShape: const Border(),
+                                      title: Wrap(
+                                        spacing: 10,
+                                        runSpacing: 4,
+                                        crossAxisAlignment:
+                                            WrapCrossAlignment.center,
+                                        children: [
+                                          const Text('核心版本'),
+                                          Text(
+                                            installed.tag,
+                                            style: theme.textTheme.titleSmall,
+                                          ),
+                                        ],
                                       ),
-                                    ],
-                                  ),
-                                  subtitle: Text(
-                                    widget.initial.corePath.isEmpty
-                                        ? '托管核心 · 查看安装路径'
-                                        : '自定义核心 · 查看安装路径',
-                                    style: theme.textTheme.bodySmall?.copyWith(
-                                      color: theme.colorScheme.onSurfaceVariant,
-                                    ),
-                                  ),
-                                  // 展开内容默认紧贴标题（childrenPadding 为零），
-                                  // 输入框的浮动标签会被挤到边框线上。这里改成
-                                  // 撑满宽度 + 显式标题 + 可换行复制的路径文本。
-                                  expandedCrossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  childrenPadding: const EdgeInsets.only(
-                                    top: 8,
-                                    bottom: 12,
-                                  ),
-                                  children: [
-                                    Padding(
-                                      padding: const EdgeInsets.only(bottom: 6),
-                                      child: Text(
-                                        '当前生效路径',
-                                        style: theme.textTheme.labelMedium,
-                                      ),
-                                    ),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 12,
-                                        vertical: 10,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: theme
-                                            .colorScheme
-                                            .surfaceContainerHighest
-                                            .withValues(alpha: 0.55),
-                                        borderRadius: BorderRadius.circular(8),
-                                        border: Border.all(
-                                          color:
-                                              theme.colorScheme.outlineVariant,
-                                        ),
-                                      ),
-                                      child: SelectableText(
-                                        installed.executable,
+                                      subtitle: Text(
+                                        widget.initial.corePath.isEmpty
+                                            ? '托管核心 · 查看安装路径'
+                                            : '自定义核心 · 查看安装路径',
                                         style: theme.textTheme.bodySmall
                                             ?.copyWith(
                                               color: theme
@@ -564,47 +527,104 @@ class _SettingsPageState extends State<SettingsPage> {
                                                   .onSurfaceVariant,
                                             ),
                                       ),
+                                      // 展开内容默认紧贴标题（childrenPadding 为零），
+                                      // 输入框的浮动标签会被挤到边框线上。这里改成
+                                      // 撑满宽度 + 显式标题 + 可换行复制的路径文本。
+                                      expandedCrossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      childrenPadding: const EdgeInsets.only(
+                                        top: 8,
+                                        bottom: 12,
+                                      ),
+                                      children: [
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            bottom: 6,
+                                          ),
+                                          child: Text(
+                                            '当前生效路径',
+                                            style: theme.textTheme.labelMedium,
+                                          ),
+                                        ),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                            vertical: 10,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: theme
+                                                .colorScheme
+                                                .surfaceContainerHighest
+                                                .withValues(alpha: 0.55),
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                            border: Border.all(
+                                              color: theme
+                                                  .colorScheme
+                                                  .outlineVariant,
+                                            ),
+                                          ),
+                                          child: SelectableText(
+                                            installed.executable,
+                                            style: theme.textTheme.bodySmall
+                                                ?.copyWith(
+                                                  color: theme
+                                                      .colorScheme
+                                                      .onSurfaceVariant,
+                                                ),
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  else
+                                    Text(
+                                      widget.checkingEnvironment
+                                          ? '正在检查下载环境…'
+                                          : widget.environmentIssue ?? '未安装',
                                     ),
-                                  ],
-                                )
-                              else
-                                Text(
-                                  widget.checkingEnvironment
-                                      ? '正在检查下载环境…'
-                                      : widget.environmentIssue ?? '未安装',
-                                ),
-                              const SizedBox(height: 12),
-                              if (!customCore)
-                                Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: OutlinedButton.icon(
-                                    onPressed:
-                                        widget.onCoreUpdate == null ||
-                                            widget.initial.corePath.isNotEmpty
-                                        ? null
-                                        : () {
-                                            final value = proxy.text.trim();
-                                            if (value.isNotEmpty &&
-                                                parseUpdateProxy(value) ==
-                                                    null) {
-                                              form.currentState?.validate();
-                                              return;
-                                            }
-                                            widget.onCoreUpdate!(value);
-                                          },
-                                    icon: const Icon(Icons.system_update_alt),
-                                    label: Text(
-                                      widget.coreActionLabel ??
-                                          (widget.core == null
-                                              ? '安装核心'
-                                              : '检查核心更新'),
+                                  if (!customCore)
+                                    Align(
+                                      alignment: Alignment.centerRight,
+                                      child: OutlinedButton.icon(
+                                        onPressed:
+                                            widget.onCoreUpdate == null ||
+                                                widget
+                                                    .initial
+                                                    .corePath
+                                                    .isNotEmpty
+                                            ? null
+                                            : () {
+                                                final value = proxy.text.trim();
+                                                if (value.isNotEmpty &&
+                                                    parseUpdateProxy(value) ==
+                                                        null) {
+                                                  form.currentState?.validate();
+                                                  return;
+                                                }
+                                                widget.onCoreUpdate!(value);
+                                              },
+                                        icon: const Icon(
+                                          Icons.system_update_alt,
+                                        ),
+                                        label: Text(
+                                          widget.coreActionLabel ??
+                                              (widget.core == null
+                                                  ? '安装核心'
+                                                  : '检查核心更新'),
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                                ),
-                              if (widget.updatingCore)
-                                const LinearProgressIndicator(),
-                              if (widget.coreUpdateStatus case final message?)
-                                Text(message, style: theme.textTheme.bodySmall),
+                                  if (widget.updatingCore)
+                                    const LinearProgressIndicator(),
+                                  if (widget.coreUpdateStatus
+                                      case final message?)
+                                    Text(
+                                      message,
+                                      style: theme.textTheme.bodySmall,
+                                    ),
+                                ],
+                              ),
                               const SizedBox(height: 24),
                               const Divider(),
                               Text('FFmpeg', style: theme.textTheme.titleSmall),
@@ -639,40 +659,63 @@ class _SettingsPageState extends State<SettingsPage> {
                                 ),
                               ),
                               const SizedBox(height: 8),
-                              if (ffmpegResult case final result?)
-                                SelectableText(
-                                  result,
-                                  style: theme.textTheme.bodySmall,
-                                )
-                              else if (widget.ffmpegAvailable == false)
-                                const Text('未找到 FFmpeg，请指定路径。')
-                              else if (resolveFFmpeg(widget.initial.ffmpegPath)
-                                  case final path?)
-                                SelectableText(
-                                  '当前路径 · $path',
-                                  style: theme.textTheme.bodySmall,
-                                ),
-                              Wrap(
-                                spacing: 8,
+                              _EnvironmentPanel(
                                 children: [
-                                  OutlinedButton(
-                                    onPressed: saving || testingFFmpeg
-                                        ? null
-                                        : testFFmpeg,
-                                    child: Text(
-                                      testingFFmpeg ? '正在测试…' : '测试 FFmpeg',
+                                  if (ffmpegResult case final result?)
+                                    SelectableText(
+                                      result,
+                                      style: theme.textTheme.bodySmall,
+                                    )
+                                  else if (widget.ffmpegAvailable == false)
+                                    const Text('未找到 FFmpeg，请指定路径。')
+                                  else if (resolveFFmpeg(
+                                        widget.initial.ffmpegPath,
+                                      )
+                                      case final path?)
+                                    Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          widget.initial.ffmpegPath.isEmpty
+                                              ? '自动查找 · PATH'
+                                              : '自定义路径',
+                                          style: theme.textTheme.titleSmall,
+                                        ),
+                                        const SizedBox(height: 4),
+                                        SelectableText(
+                                          path,
+                                          style: theme.textTheme.bodySmall,
+                                        ),
+                                      ],
                                     ),
-                                  ),
-                                  TextButton(
-                                    onPressed: saving || testingFFmpeg
-                                        ? null
-                                        : () {
-                                            setState(() {
-                                              ffmpegPath.clear();
-                                              ffmpegResult = null;
-                                            });
-                                          },
-                                    child: const Text('恢复自动查找'),
+                                  const SizedBox(height: 16),
+                                  Wrap(
+                                    alignment: WrapAlignment.end,
+                                    spacing: 8,
+                                    runSpacing: 4,
+                                    children: [
+                                      OutlinedButton(
+                                        onPressed: saving || testingFFmpeg
+                                            ? null
+                                            : testFFmpeg,
+                                        child: Text(
+                                          testingFFmpeg ? '正在测试…' : '测试 FFmpeg',
+                                        ),
+                                      ),
+                                      if (ffmpegPath.text.trim().isNotEmpty)
+                                        TextButton(
+                                          onPressed: saving || testingFFmpeg
+                                              ? null
+                                              : () {
+                                                  setState(() {
+                                                    ffmpegPath.clear();
+                                                    ffmpegResult = null;
+                                                  });
+                                                },
+                                          child: const Text('恢复自动查找'),
+                                        ),
+                                    ],
                                   ),
                                 ],
                               ),
@@ -680,24 +723,40 @@ class _SettingsPageState extends State<SettingsPage> {
                               const Divider(),
                               Text('客户端', style: theme.textTheme.titleSmall),
                               const SizedBox(height: 8),
-                              Text('当前版本 ${widget.clientVersion ?? '—'}'),
-                              if (widget.clientUpdateStatus case final message?)
-                                Text(message, style: theme.textTheme.bodySmall),
-                              const SizedBox(height: 8),
-                              Wrap(
-                                spacing: 8,
+                              _EnvironmentPanel(
                                 children: [
-                                  OutlinedButton.icon(
-                                    onPressed: widget.onCheckClientUpdate,
-                                    icon: const Icon(Icons.refresh),
-                                    label: const Text('检查客户端更新'),
+                                  Text(
+                                    '当前版本 ${widget.clientVersion ?? '—'}',
+                                    style: theme.textTheme.titleSmall,
                                   ),
-                                  if (widget.clientUpdateAvailable)
-                                    TextButton.icon(
-                                      onPressed: widget.onClientUpdate,
-                                      icon: const Icon(Icons.open_in_new),
-                                      label: const Text('前往下载'),
+                                  if (widget.clientUpdateStatus
+                                      case final message?)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 4),
+                                      child: Text(
+                                        message,
+                                        style: theme.textTheme.bodySmall,
+                                      ),
                                     ),
+                                  const SizedBox(height: 8),
+                                  Wrap(
+                                    alignment: WrapAlignment.end,
+                                    spacing: 8,
+                                    runSpacing: 4,
+                                    children: [
+                                      OutlinedButton.icon(
+                                        onPressed: widget.onCheckClientUpdate,
+                                        icon: const Icon(Icons.refresh),
+                                        label: const Text('检查客户端更新'),
+                                      ),
+                                      if (widget.clientUpdateAvailable)
+                                        TextButton.icon(
+                                          onPressed: widget.onClientUpdate,
+                                          icon: const Icon(Icons.open_in_new),
+                                          label: const Text('前往下载'),
+                                        ),
+                                    ],
+                                  ),
                                 ],
                               ),
                               if (error case final message?)
@@ -752,6 +811,29 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _EnvironmentPanel extends StatelessWidget {
+  const _EnvironmentPanel({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        border: Border.all(color: colors.outlineVariant),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: children,
       ),
     );
   }
