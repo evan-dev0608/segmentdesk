@@ -51,7 +51,36 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path dist | Out-Null
           Copy-Item ../LICENSE build/windows/x64/runner/Release/LICENSE.txt
-          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath dist/SegmentDesk-windows-x64.zip
+          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath dist/SegmentDesk-windows-x64-no-install.zip
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
+          if (-not (Test-Path -LiteralPath $compiler)) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $versionLine = Get-Content pubspec.yaml | Where-Object { $_ -match '^version:\s+\d+\.\d+\.\d+\+\d+$' }
+          if (-not $versionLine) { throw 'Cannot read app version from pubspec.yaml' }
+          $version = ($versionLine -split '[:+]')[1].Trim()
+          & $compiler "/DAppVersion=$version" 'packaging/windows/SegmentDesk.iss'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke-test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'SegmentDesk-install-test'
+          $setup = Start-Process -FilePath (Resolve-Path 'dist/SegmentDesk-windows-x64-setup.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="' + $target + '"')) -Wait -PassThru -WindowStyle Hidden
+          if ($setup.ExitCode -ne 0) { throw "Installer exited with code $($setup.ExitCode)" }
+          foreach ($entry in 'stream_download.exe', 'flutter_windows.dll', 'data/flutter_assets') {
+            if (-not (Test-Path -LiteralPath (Join-Path $target $entry))) { throw "Missing installed file: $entry" }
+          }
+          $uninstaller = Get-ChildItem -LiteralPath $target -Filter 'unins*.exe' | Select-Object -First 1
+          $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru -WindowStyle Hidden
+          if ($uninstall.ExitCode -ne 0 -or (Test-Path -LiteralPath (Join-Path $target 'stream_download.exe'))) {
+            throw 'Uninstall smoke test failed'
+          }
       - name: Package macOS
         if: runner.os == 'macOS'
         run: |

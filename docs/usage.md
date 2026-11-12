@@ -2,7 +2,13 @@
 
 ## 安装与首次运行
 
-从源码运行或构建，请参阅 [Flutter 桌面工程](../desktop/README.md)。如果使用 Windows 构建包，解压整个包后运行 `stream_download.exe`，保留同目录的 DLL 和 `data` 文件夹。
+从源码运行或构建，请参阅 [Flutter 桌面工程](../desktop/README.md)。从 [GitHub Releases](https://github.com/evan-dev0608/segmentdesk/releases) 下载对应平台的压缩包或安装程序。
+
+- **Windows 安装版（推荐）**：运行 `SegmentDesk-windows-x64-setup.exe`。默认安装到当前用户目录，无需管理员权限。可从开始菜单启动，在 Windows 应用设置中卸载。
+- **Windows 免安装版**：解压 `SegmentDesk-windows-x64-no-install.zip` 的完整内容，再运行 `stream_download.exe`。保留同目录的 DLL 和 `data` 文件夹。
+- **macOS / Linux**：macOS 解压后打开 `SegmentDesk.app`，Linux 解压后运行 `stream_download`。macOS 预发行包尚未做 Developer ID 签名和公证。
+
+Windows 的安装版和免安装版共用当前用户的核心和设置。安装程序目前未签名，Windows 可能显示发布者提示。
 
 核心安装需要能访问 GitHub，并使用系统上的 `curl` 和 `tar`。媒体任务通常需要 FFmpeg。安装后，在终端运行 `ffmpeg -version` 可检查 PATH 是否生效。如果修改了 PATH，重新打开客户端。
 

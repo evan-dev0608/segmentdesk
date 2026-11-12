@@ -29,7 +29,7 @@ SegmentDesk 把流媒体下载、任务日志和核心更新放在一个桌面�
 2. 安装 FFmpeg，并确保下载核心能在 PATH 中找到它。
 3. 点击 **新建下载**，粘贴清单链接，选择目录，再点击 **开始下载**。
 
-[GitHub Releases](https://github.com/evan-dev0608/segmentdesk/releases) 提供 Windows x64、macOS ARM64 和 Linux x64 预发行包。三端均已通过 CI 构建，macOS 与 Linux 仍待实机验证。详见 [使用说明](docs/usage.md) 和 [构建说明](desktop/README.md)。
+[GitHub Releases](https://github.com/evan-dev0608/segmentdesk/releases) 提供 Windows x64、macOS ARM64 和 Linux x64 预发行包。Windows 提供安装版和免安装 ZIP，首次使用推荐安装版。三端均已通过 CI 构建，macOS 与 Linux 仍待实机验证。详见 [使用说明](docs/usage.md) 和 [构建说明](desktop/README.md)。
 
 ## 当前范围
 
