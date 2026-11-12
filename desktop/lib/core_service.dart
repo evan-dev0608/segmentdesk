@@ -113,6 +113,38 @@ class SystemCoreRunner implements CoreRunner {
 }
 
 class CoreService {
+  static Future<CoreInstall> inspectExecutable(String path) async {
+    final file = File(path);
+    if (!file.isAbsolute || !await file.exists()) {
+      throw const FormatException('请选择存在的核心可执行文件。');
+    }
+    final result = await Process.run(path, [
+      '--version',
+    ]).timeout(const Duration(seconds: 5));
+    final version = '${result.stdout}\n${result.stderr}'
+        .split(RegExp(r'[\r\n]+'))
+        .map((line) => line.trim())
+        .where(
+          (line) =>
+              line.contains('N_m3u8DL-RE') ||
+              RegExp(r'^v?\d+\.\d+\.\d+(?:[-+][\w.+-]+)?$').hasMatch(line),
+        )
+        .firstOrNull;
+    if (result.exitCode != 0 || version == null) {
+      throw const FormatException('所选文件未返回 N_m3u8DL-RE 版本信息。');
+    }
+    final help = await Process.run(path, [
+      '--help',
+    ]).timeout(const Duration(seconds: 5));
+    final usage = help.stdout.toString();
+    if (help.exitCode != 0 ||
+        !usage.contains('--select-video') ||
+        !usage.contains('--write-meta-json')) {
+      throw const FormatException('所选文件没有 N_m3u8DL-RE 的下载选项。');
+    }
+    return CoreInstall(path, version, verified: false);
+  }
+
   CoreService({CoreRunner? runner, this.dataDirectory})
     : runner = runner ?? const SystemCoreRunner();
 

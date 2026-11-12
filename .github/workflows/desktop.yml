@@ -129,11 +129,11 @@ jobs:
           pattern: segmentdesk-*
           path: dist
           merge-multiple: true
-      - name: Publish prerelease
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           cd dist
           sha256sum SegmentDesk-* > SHA256SUMS.txt
-          gh release create "$TAG" SegmentDesk-* SHA256SUMS.txt --verify-tag --prerelease --generate-notes --title "SegmentDesk $TAG"
+          gh release create "$TAG" SegmentDesk-* SHA256SUMS.txt --verify-tag --latest --generate-notes --title "SegmentDesk $TAG"

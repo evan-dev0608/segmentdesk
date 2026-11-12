@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:ffi';
+import 'dart:ffi' hide Size;
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -15,6 +15,145 @@ import 'package:stream_download/selection.dart';
 import 'package:stream_download/selection_dialog.dart';
 
 void main() {
+  testWidgets('settings options open below their field', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsPage(
+          initial: Preferences.defaults(),
+          core: null,
+          onClose: () {},
+          onSaved: (_) {},
+          checkingEnvironment: false,
+          environmentIssue: null,
+          ffmpegAvailable: true,
+          coreUpdateStatus: null,
+          updatingCore: false,
+          onCoreUpdate: null,
+          onClientUpdate: () {},
+        ),
+      ),
+    );
+    final field = find.ancestor(
+      of: find.text('跟随系统'),
+      matching: find.byType(InputDecorator),
+    );
+    final bounds = tester.getRect(field);
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    final option = tester.getRect(find.widgetWithText(MenuItemButton, '深色'));
+    expect(option.top, greaterThan(bounds.bottom));
+    await tester.tap(find.widgetWithText(MenuItemButton, '深色'));
+    await tester.pumpAndSettle();
+    expect(find.text('深色'), findsOneWidget);
+  });
+  testWidgets('settings scrollbar is not permanently visible', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsPage(
+          initial: Preferences.defaults(),
+          core: null,
+          onClose: () {},
+          onSaved: (_) {},
+          checkingEnvironment: false,
+          environmentIssue: null,
+          ffmpegAvailable: true,
+          coreUpdateStatus: null,
+          updatingCore: false,
+          onCoreUpdate: null,
+          onClientUpdate: () {},
+        ),
+      ),
+    );
+    final theme = ScrollbarTheme.of(
+      tester.element(find.byType(SingleChildScrollView)),
+    );
+    expect(theme.thumbVisibility?.resolve(const <WidgetState>{}), isFalse);
+    expect(theme.trackVisibility?.resolve(const <WidgetState>{}), isFalse);
+    expect(theme.thickness?.resolve(const <WidgetState>{}), 6.0);
+    expect(theme.crossAxisMargin, 6);
+    expect(theme.mainAxisMargin, 12);
+    expect(theme.minThumbLength, 48);
+  });
+
+  testWidgets(
+    'settings scroll view spans the card so the scrollbar is on the right edge',
+    (tester) async {
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsPage(
+            initial: Preferences.defaults(),
+            core: null,
+            onClose: () {},
+            onSaved: (_) {},
+            checkingEnvironment: false,
+            environmentIssue: null,
+            ffmpegAvailable: true,
+            coreUpdateStatus: null,
+            updatingCore: false,
+            onCoreUpdate: null,
+            onClientUpdate: () {},
+          ),
+        ),
+      );
+      final card = tester.getRect(find.byType(Card));
+      final scrollView = tester.getRect(find.byType(SingleChildScrollView));
+      final form = tester.getRect(find.byType(Form));
+      // 滚动条由桌面端 ScrollBehavior 挂在滚动视图边缘，视图必须铺满卡片。
+      expect(scrollView.left, closeTo(card.left, 1.0));
+      expect(scrollView.right, closeTo(card.right, 1.0));
+      // 表单仍按 760（28 + 704 + 28）左对齐，不跟着拉宽。
+      expect(form.left, closeTo(card.left + 28, 1.0));
+      expect(form.width, 704.0);
+      expect(form.right, lessThan(card.right - 100));
+    },
+  );
+
+  testWidgets('install details show a full path without a clipped label', (
+    tester,
+  ) async {
+    const executable =
+        r'C:\Users\Farewell\AppData\Local\StreamDownloadGUI\core-20261112\N_m3u8DL-RE.exe';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsPage(
+          initial: Preferences.defaults(),
+          core: const CoreInstall(executable, 'v0.6.0-beta'),
+          onClose: () {},
+          onSaved: (_) {},
+          checkingEnvironment: false,
+          environmentIssue: null,
+          ffmpegAvailable: true,
+          coreUpdateStatus: null,
+          updatingCore: false,
+          onCoreUpdate: null,
+          onClientUpdate: () {},
+        ),
+      ),
+    );
+    await tester.ensureVisible(find.text('v0.6.0-beta'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('v0.6.0-beta'));
+    await tester.pumpAndSettle();
+    expect(find.text('当前生效路径'), findsOneWidget);
+    expect(
+      tester.widget<SelectableText>(find.byType(SelectableText)).data,
+      executable,
+    );
+    final label = tester.getRect(find.text('当前生效路径'));
+    final path = tester.getRect(find.byType(SelectableText));
+    expect(label.bottom, lessThanOrEqualTo(path.top));
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is TextField && widget.decoration?.labelText == '当前生效路径',
+      ),
+      findsNothing,
+    );
+  });
+
   test(
     'separates audio and subtitle progress frames without newlines',
     () async {

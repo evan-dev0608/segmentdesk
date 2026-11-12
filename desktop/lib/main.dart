@@ -258,8 +258,11 @@ class _WorkspaceState extends State<Workspace> {
         (_) => unawaited(checkBrowserImport(inbox)),
       );
     }
-    loadPreferences();
-    unawaited(checkEnvironment());
+    unawaited(
+      loadPreferences().then((_) {
+        if (mounted) return checkEnvironment();
+      }),
+    );
   }
 
   Future<void> checkEnvironment() async {
@@ -274,8 +277,11 @@ class _WorkspaceState extends State<Workspace> {
     CoreInstall? active;
     String? issue;
     try {
-      active = await core.installed();
-      if (active != null) {
+      final customPath = preferences.corePath;
+      active = customPath.isEmpty
+          ? await core.installed()
+          : await CoreService.inspectExecutable(customPath);
+      if (active != null && customPath.isEmpty) {
         final probe = await Process.run(active.executable, [
           '--version',
         ]).timeout(const Duration(seconds: 5));
@@ -283,7 +289,9 @@ class _WorkspaceState extends State<Workspace> {
       }
     } catch (_) {
       active = null;
-      issue = '核心无法运行，请重新安装。';
+      issue = preferences.corePath.isEmpty
+          ? '核心无法运行，请重新安装。'
+          : '自定义核心无法运行，请在设置中更换路径。';
     }
     if (!mounted) return;
     setState(() {
@@ -744,8 +752,18 @@ class _WorkspaceState extends State<Workspace> {
                 onClientUpdate: openClientUpdates,
                 onClose: () => setState(() => showingSettings = false),
                 onSaved: (value) {
+                  final changedCore = preferences.corePath != value.corePath;
                   applyPreferences(value);
-                  setState(() => showingSettings = false);
+                  setState(() {
+                    showingSettings = false;
+                    if (changedCore) {
+                      installed = null;
+                      checkingEnvironment = true;
+                      noConfigProbe = null;
+                      coreUpdateStatus = null;
+                    }
+                  });
+                  if (changedCore) unawaited(checkEnvironment());
                 },
               ),
             )

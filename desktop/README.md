@@ -20,4 +20,4 @@
 
 ## GitHub 打包
 
-仓库的 **Desktop builds** 工作流会分别在 Windows、macOS 和 Linux 上构建。手动运行可下载三个 Actions 构建产物。推送 `v` 开头的标签后，三端全部构建成功才会发布一个 GitHub 预发行版，包含 Windows x64 安装版与免安装 ZIP、macOS ARM64 和 Linux x64 压缩包，以及 SHA-256 清单。Windows 安装包使用 Inno Setup，CI 会验证静默安装和卸载。macOS 包没有签名和公证。
+仓库的 **Desktop builds** 工作流会分别在 Windows、macOS 和 Linux 上构建。手动运行可下载三个 Actions 构建产物。推送 `v` 开头的标签后，三端全部构建成功才会发布一个 GitHub 正式版（Latest），包含 Windows x64 安装版与免安装 ZIP、macOS ARM64 和 Linux x64 压缩包，以及 SHA-256 清单。Windows 安装包使用 Inno Setup，CI 会验证静默安装和卸载。macOS 包没有签名和公证。
