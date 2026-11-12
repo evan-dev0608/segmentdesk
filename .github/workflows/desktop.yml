@@ -57,7 +57,7 @@ jobs:
         run: |
           mkdir -p dist
           app="build/macos/Build/Products/Release/SegmentDesk.app"
-          lipo -verify_arch arm64 "$app/Contents/MacOS/SegmentDesk"
+          lipo "$app/Contents/MacOS/SegmentDesk" -verify_arch arm64
           cp ../LICENSE build/macos/Build/Products/Release/LICENSE.txt
           ditto -c -k --keepParent "$app" dist/SegmentDesk-macos-arm64.zip
           archive="$PWD/dist/SegmentDesk-macos-arm64.zip"
