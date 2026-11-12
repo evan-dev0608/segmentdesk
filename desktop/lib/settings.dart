@@ -12,6 +12,7 @@ class Preferences {
     this.container, {
     this.themeMode = ThemeMode.system,
     this.accent = 'indigo',
+    this.updateProxy = '',
   });
 
   static const accents = {
@@ -28,6 +29,7 @@ class Preferences {
   };
   final ThemeMode themeMode;
   final String accent;
+  final String updateProxy;
   Color get seed => accents[accent]!.$2;
 
   factory Preferences.defaults() =>
@@ -67,6 +69,10 @@ class Preferences {
       accent: accents.containsKey(data['accent'])
           ? data['accent'] as String
           : defaults.accent,
+      updateProxy: data['updateProxy'] is String &&
+              parseUpdateProxy(data['updateProxy'] as String) != null
+          ? data['updateProxy'] as String
+          : '',
     );
   }
 
@@ -81,6 +87,7 @@ class Preferences {
           'container': container,
           'themeMode': themeMode.name,
           'accent': accent,
+          'updateProxy': updateProxy,
         }),
         flush: true,
       );
@@ -107,12 +114,14 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late String container = widget.initial.container;
   late ThemeMode themeMode = widget.initial.themeMode;
   late String accent = widget.initial.accent;
+  late final proxy = TextEditingController(text: widget.initial.updateProxy);
   bool saving = false;
   String? error;
 
   @override
   void dispose() {
     folder.dispose();
+    proxy.dispose();
     super.dispose();
   }
 
@@ -123,6 +132,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       container,
       themeMode: themeMode,
       accent: accent,
+      updateProxy: proxy.text.trim(),
     );
     setState(() {
       saving = true;
@@ -235,6 +245,22 @@ class _SettingsDialogState extends State<SettingsDialog> {
               const SizedBox(height: 24),
               const Divider(),
               Text('下载核心', style: theme.textTheme.titleSmall),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: proxy,
+                enabled: !saving,
+                decoration: const InputDecoration(
+                  labelText: '核心更新代理（可选）',
+                  hintText: 'http://127.0.0.1:7890',
+                  helperText: '仅用于从 GitHub 安装和更新核心。',
+                ),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) return null;
+                  return parseUpdateProxy(value) == null
+                      ? '请输入包含协议、主机和端口的代理地址'
+                      : null;
+                },
+              ),
               const SizedBox(height: 8),
               Text(widget.core?.tag ?? '未安装'),
               if (widget.core case final installed?)

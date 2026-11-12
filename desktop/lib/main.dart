@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
@@ -54,11 +55,159 @@ class _DownloadAppState extends State<DownloadApp> {
 }
 
 class Task {
-  Task(this.name, this.folder);
-  final String name;
-  final String folder;
-  String state = '下载中';
+  Task(this.request);
+  final AdvancedRequest request;
+  String get name => request.title;
+  String get folder {
+    final arguments = request.arguments;
+    for (final flag in ['--save-dir', '--output']) {
+      final index = arguments.lastIndexOf(flag);
+      if (index > 0 && index + 1 < arguments.length) {
+        final value = arguments[index + 1];
+        final path = File(value).isAbsolute
+            ? value
+            : '${request.directory}${CoreService.sep}$value';
+        return flag == '--output' ? File(path).parent.path : path;
+      }
+    }
+    return request.directory;
+  }
+
+  String state = '准备中';
+  bool running = true;
+  bool failed = false;
+  int errorSignals = 0;
+  bool uncheckedSegments = false;
   final List<String> log = [];
+}
+
+String? coreTaskPhase(String line) {
+  final text = line.toLowerCase();
+  if (text.contains('开始下载...') ||
+      text.contains('開始下載...') ||
+      text.contains('start downloading...')) {
+    return '下载中';
+  }
+  if (text.contains('二进制合并中') ||
+      text.contains('二進位制合併中') ||
+      text.contains('ffmpeg合并中') ||
+      text.contains('ffmpeg合併中') ||
+      text.contains('binary merging...') ||
+      text.contains('ffmpeg merging...') ||
+      // StaticText.cs 的 partMerge：分片过多时先分块合并，同样属于合并阶段。
+      text.contains('分片数量达到') ||
+      text.contains('分片數量達到') ||
+      text.contains('at least 1800 segments')) {
+    return '合并中';
+  }
+  return null;
+}
+
+/// 上游默认读取全局 config.conf（命令行 > 配置 > 默认，可重复选项会合并），
+/// 这些注入值在界面上完全不可见。用户显式指定 --config 时不能追加
+/// --no-config：上游 ConfigFile.cs 会对两者并存直接抛 configFileConflict。
+List<String> isolateCoreArguments(
+  List<String> arguments, {
+  bool isolate = true,
+}) {
+  if (!isolate ||
+      arguments.any((value) => value == '--config' || value == '--no-config')) {
+    return arguments;
+  }
+  return [...arguments, '--no-config'];
+}
+
+/// 官方发行版与上游源码存在版本差：例如 v0.6.0-beta（20260628）并没有
+/// --no-config，无条件追加会让所有任务因「未知参数」直接失败。
+/// 这里按帮助文本判断能力，探测失败时宁可不隔离，也不能让任务起不来。
+bool coreHelpSupports(String help, String flag) {
+  for (final line in const LineSplitter().convert(help)) {
+    final trimmed = line.trimLeft();
+    // 只看选项行，避免描述文字里提到同名参数时误判。
+    if (!trimmed.startsWith('-')) continue;
+    if (trimmed.split(RegExp(r'\s+')).contains(flag)) return true;
+  }
+  return false;
+}
+
+Future<bool> probeCoreFlag(String executable, String flag) async {
+  try {
+    final result = await Process.run(executable, [
+      '--ui-language',
+      'en-US',
+      '--help',
+    ], stdoutEncoding: null).timeout(const Duration(seconds: 12));
+    if (result.exitCode != 0) return false;
+    return coreHelpSupports(
+      utf8.decode(result.stdout as List<int>, allowMalformed: true),
+      flag,
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+/// 找到 ffmpeg 时把绝对路径显式交给核心，避免两端解析到不同副本。
+/// 找不到时不阻断：核心仍有 CheckMediaTools 与自带的工具查找逻辑。
+List<String> withFFmpegPath(List<String> arguments, String? ffmpeg) {
+  if (ffmpeg == null || arguments.contains('--ffmpeg-binary-path')) {
+    return arguments;
+  }
+  return [...arguments, '--ffmpeg-binary-path', ffmpeg];
+}
+
+Future<String?> findFFmpegBinary() async {
+  try {
+    final result = await Process.run(Platform.isWindows ? 'where' : 'which', [
+      'ffmpeg',
+    ]);
+    if (result.exitCode != 0) return null;
+    final paths = const LineSplitter()
+        .convert((result.stdout as String).trim())
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList();
+    return paths.isEmpty ? null : paths.first;
+  } on ProcessException {
+    return null;
+  }
+}
+
+/// 上游 SimpleDownloadManager.cs 在 --check-segments-count false 时会
+/// 静默移除缺失分片并继续合并，可能返回退出码 0 且没有 ERROR 日志。
+bool hasDisabledSegmentCheck(List<String> arguments) {
+  for (var index = 0; index + 1 < arguments.length; index++) {
+    if (arguments[index] == '--check-segments-count' &&
+        arguments[index + 1].toLowerCase() == 'false') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// 上游部分失败不体现在退出码里：分片重试耗尽只写 Extra / WARN，
+/// 某些失败路径还会被吞掉后继续推进。只认 ERROR 级正式日志和
+/// 上游明确的失败字面量，避免把普通 WARN 误判成失败。
+bool coreFailureSignal(String line) {
+  final text = line.toLowerCase();
+  if (RegExp(r'^\d{2}:\d{2}:\d{2}\.\d{3}\s+error\b').hasMatch(text)) {
+    return true;
+  }
+  const literals = [
+    'segment count check not pass',
+    '分片数量校验不通过',
+    '分片數量校驗不通過',
+    'the retry attempts have been exhausted',
+    'mux failed',
+    'decryption failed',
+    '解密失败',
+    'processing failed',
+    '处理失败',
+    '處理失敗',
+    'failed to load url',
+    '加载url失败',
+  ];
+  return literals.any((literal) => text.contains(literal));
 }
 
 class Workspace extends StatefulWidget {
@@ -81,8 +230,13 @@ class _WorkspaceState extends State<Workspace> {
   String status = '就绪';
   Preferences preferences = Preferences.defaults();
   bool preferencesReady = false;
+  Future<bool>? noConfigProbe;
 
   bool get busy => updating || launching || process != null;
+
+  /// 同一核心只探测一次；换核心后由 update() 清空缓存。
+  Future<bool> supportsNoConfig(String executable) =>
+      noConfigProbe ??= probeCoreFlag(executable, '--no-config');
 
   @override
   void initState() {
@@ -129,11 +283,14 @@ class _WorkspaceState extends State<Workspace> {
     try {
       final value = await core.update((message) {
         if (mounted) setState(() => status = message);
-      });
+      }, proxy: parseUpdateProxy(preferences.updateProxy));
       if (mounted) {
         setState(() {
           installed = value;
-          status = '核心已就绪 · ${value.tag}';
+          noConfigProbe = null;
+          status = value.verified
+              ? '核心已就绪 · ${value.tag}'
+              : '核心已就绪 · ${value.tag}（本次未做完整性校验）';
         });
       }
     } catch (error) {
@@ -146,34 +303,47 @@ class _WorkspaceState extends State<Workspace> {
   Future<void> createTask() async {
     final active = installed;
     if (active == null || busy || !preferencesReady) return;
-    final request = await showDialog<DownloadRequest>(
+    final request = await showDialog<AdvancedRequest>(
       context: context,
-      builder: (_) => NewDownload(initialFolder: preferences.folder),
-    );
-    if (request == null || !mounted || busy) return;
-    await launch(
-      active,
-      AdvancedRequest(
-        request.name.isEmpty ? Uri.parse(request.url).host : request.name,
-        request.folder,
-        [
-          request.url,
-          '--save-dir',
-          request.folder,
-          '--auto-select',
-          '--no-ansi-color',
-          '--no-log',
-          '--ui-language',
-          'zh-CN',
-          '--disable-update-check',
-          if (preferences.container != 'none') ...[
-            '-M',
-            'format=${preferences.container}',
-          ],
-          if (request.name.isNotEmpty) ...['--save-name', request.name],
-        ],
+      builder: (_) => NewDownload(
+        initialFolder: preferences.folder,
+        buildRequest: (input, folder, name) =>
+            AdvancedRequest(name.isEmpty ? inputTitle(input) : name, folder, [
+              input,
+              '--save-dir',
+              folder,
+              '--auto-select',
+              '--no-ansi-color',
+              '--no-log',
+              '--ui-language',
+              'zh-CN',
+              '--disable-update-check',
+              if (preferences.container != 'none') ...[
+                '-M',
+                'format=${preferences.container}',
+              ],
+              if (name.isNotEmpty) ...['--save-name', name],
+            ]),
+        openOptions: (input, folder, name) => showDialog<AdvancedRequest>(
+          context: context,
+          builder: (_) => AdvancedDialog(
+            core: active,
+            directory: folder,
+            initialInput: input,
+            initialName: name,
+          ),
+        ),
       ),
     );
+    if (request != null && mounted && !busy) await launch(active, request);
+  }
+
+  String inputTitle(String input) {
+    final uri = Uri.tryParse(input);
+    if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
+      return uri.host;
+    }
+    return File(input).uri.pathSegments.last;
   }
 
   Future<void> openAdvanced() async {
@@ -181,14 +351,17 @@ class _WorkspaceState extends State<Workspace> {
     if (active == null || busy || !preferencesReady) return;
     final request = await showDialog<AdvancedRequest>(
       context: context,
-      builder: (_) =>
-          AdvancedDialog(core: active, directory: preferences.folder),
+      builder: (_) => AdvancedDialog(
+        core: active,
+        directory: Directory(preferences.folder).absolute.path,
+        toolsOnly: true,
+      ),
     );
     if (request != null && mounted && !busy) await launch(active, request);
   }
 
   Future<void> launch(CoreInstall active, AdvancedRequest request) async {
-    final task = Task(request.title, request.directory);
+    final task = Task(request);
     setState(() {
       tasks.insert(0, task);
       selected = task;
@@ -198,9 +371,46 @@ class _WorkspaceState extends State<Workspace> {
     });
     try {
       await Directory(request.directory).create(recursive: true);
+      // doctor 的职责是检查本机环境（含全局配置文件），豁免配置隔离。
+      // 旧发行版没有 --no-config，此时只跳过隔离并提示全局配置可能生效。
+      final canIsolate =
+          !request.isDoctor && await supportsNoConfig(active.executable);
+      var arguments = isolateCoreArguments(
+        request.arguments,
+        isolate: canIsolate,
+      );
+      if (!canIsolate && !request.isDoctor && mounted) {
+        task.log.add(
+          '提示：当前核心未提供 --no-config，已跳过配置隔离；'
+          '全局 config.conf 可能影响本次任务。',
+        );
+      }
+      if (!request.tool) {
+        final ffmpeg = await findFFmpegBinary();
+        if (ffmpeg == null && mounted) {
+          setState(() {
+            task.log.add(
+              '提示：未在 PATH 中找到 ffmpeg，核心将按自身配置查找。'
+              '若混流失败，请安装 FFmpeg 并重启客户端。',
+            );
+          });
+        }
+        arguments = withFFmpegPath(arguments, ffmpeg);
+      }
+      // 关闭分片数量校验时，上游会静默移除缺失分片并继续合并，
+      // 可能以退出码 0 结束。GUI 无法从日志反推，只能显式提示风险。
+      if (hasDisabledSegmentCheck(arguments) && mounted) {
+        setState(() {
+          task.uncheckedSegments = true;
+          task.log.add(
+            '提示：本次关闭了分片数量校验，核心可能跳过缺失分片并以退出码 0 结束，'
+            '请核对输出文件是否完整。',
+          );
+        });
+      }
       final child = await Process.start(
         active.executable,
-        request.arguments,
+        arguments,
         workingDirectory: request.directory,
       );
       process = child;
@@ -208,14 +418,25 @@ class _WorkspaceState extends State<Workspace> {
       if (mounted) {
         setState(() {
           launching = false;
-          status = '正在下载';
+          task.state = '核心运行中';
+          status = task.state;
         });
       }
       void record(String line) {
         if (!mounted) return;
         setState(() {
-          task.log.add(line);
+          // 进度条每一帧都是独立行，折叠成一行，避免刷掉正式日志。
+          if (task.log.isNotEmpty && shouldFoldLogLine(task.log.last, line)) {
+            task.log.last = line;
+          } else {
+            task.log.add(line);
+          }
           if (task.log.length > 1000) task.log.removeAt(0);
+          if (coreFailureSignal(line)) task.errorSignals++;
+          if (coreTaskPhase(line) case final phase? when task.state != '停止中') {
+            task.state = phase;
+            status = phase;
+          }
         });
       }
 
@@ -225,8 +446,20 @@ class _WorkspaceState extends State<Workspace> {
       final code = await child.exitCode;
       if (mounted) {
         setState(() {
+          task.running = false;
           if (task.state != '停止中') {
-            task.state = code == 0 ? '已完成' : '失败 ($code)';
+            if (code != 0) {
+              task.failed = true;
+              task.state = '失败 ($code)';
+            } else if (task.errorSignals > 0) {
+              // 日志里有明确错误信号，退出码 0 也不能当成完整成功。
+              task.failed = true;
+              task.state = '完成（有错误）';
+            } else if (task.uncheckedSegments) {
+              task.state = '已完成（未校验分片数）';
+            } else {
+              task.state = '已完成';
+            }
           } else {
             task.state = '已停止';
           }
@@ -236,6 +469,8 @@ class _WorkspaceState extends State<Workspace> {
     } catch (error) {
       if (mounted) {
         setState(() {
+          task.running = false;
+          task.failed = true;
           task.state = '失败';
           task.log.add('$error');
           status = '下载失败';
@@ -251,6 +486,28 @@ class _WorkspaceState extends State<Workspace> {
     }
   }
 
+  Future<void> openTaskFolder(Task task) async {
+    try {
+      final folder = Directory(task.folder).absolute.path;
+      if (!await Directory(folder).exists()) {
+        throw FileSystemException('输出目录不存在', folder);
+      }
+      if (Platform.isWindows) {
+        await Process.start('explorer.exe', [
+          folder,
+        ], mode: ProcessStartMode.detached);
+      } else {
+        final result = await Process.run(
+          Platform.isMacOS ? 'open' : 'xdg-open',
+          [folder],
+        );
+        if (result.exitCode != 0) throw FileSystemException('系统无法打开目录', folder);
+      }
+    } on Exception catch (error) {
+      if (mounted) setState(() => status = '打开目录失败：$error');
+    }
+  }
+
   void stop() {
     final active = tasks.firstOrNull;
     if (process?.kill() == true && active != null) {
@@ -263,7 +520,7 @@ class _WorkspaceState extends State<Workspace> {
     final colors = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
     final visible = tasks.where((task) {
-      final running = task.state == '下载中' || task.state == '停止中';
+      final running = task.running;
       return filter == 0 || (filter == 1 ? running : !running);
     }).toList();
     return Scaffold(
@@ -323,7 +580,7 @@ class _WorkspaceState extends State<Workspace> {
                     const Spacer(),
                     ListTile(
                       leading: const Icon(Icons.tune_rounded, size: 20),
-                      title: const Text('选项与工具'),
+                      title: const Text('文件工具'),
                       onTap: installed == null || busy || !preferencesReady
                           ? null
                           : openAdvanced,
@@ -339,7 +596,7 @@ class _WorkspaceState extends State<Workspace> {
                     Text(installed?.tag ?? '未安装', style: text.bodySmall),
                     const SizedBox(height: 12),
                     OutlinedButton.icon(
-                      onPressed: busy ? null : update,
+                      onPressed: busy || !preferencesReady ? null : update,
                       icon: const Icon(
                         Icons.system_update_alt_rounded,
                         size: 18,
@@ -425,7 +682,23 @@ class _WorkspaceState extends State<Workspace> {
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                   ),
-                                  trailing: Text(task.state),
+                                  trailing: Chip(
+                                    label: Text(task.state),
+                                    avatar: Icon(
+                                      task.failed
+                                          ? Icons.error_outline
+                                          : task.running
+                                          ? Icons.timelapse
+                                          : task.state == '已完成'
+                                          ? Icons.check_circle_outline
+                                          : Icons.stop_circle_outlined,
+                                      size: 16,
+                                    ),
+                                    side: BorderSide.none,
+                                    backgroundColor: task.failed
+                                        ? colors.errorContainer
+                                        : colors.secondaryContainer,
+                                  ),
                                   onTap: () => setState(() => selected = task),
                                 );
                               },
@@ -434,7 +707,25 @@ class _WorkspaceState extends State<Workspace> {
                   ),
                   if (selected != null && visible.contains(selected)) ...[
                     const SizedBox(height: 16),
-                    Text('任务日志', style: text.titleSmall),
+                    Row(
+                      children: [
+                        Expanded(child: Text('任务日志', style: text.titleSmall)),
+                        if (!selected!.running)
+                          IconButton(
+                            tooltip: '打开输出目录',
+                            icon: const Icon(Icons.folder_open_outlined),
+                            onPressed: () => openTaskFolder(selected!),
+                          ),
+                        if (selected!.failed)
+                          TextButton.icon(
+                            icon: const Icon(Icons.replay),
+                            label: const Text('用原设置重试'),
+                            onPressed: busy || installed == null
+                                ? null
+                                : () => launch(installed!, selected!.request),
+                          ),
+                      ],
+                    ),
                     const SizedBox(height: 8),
                     SizedBox(
                       height: 128,
@@ -453,7 +744,8 @@ class _WorkspaceState extends State<Workspace> {
                     ),
                   ],
                   const SizedBox(height: 12),
-                  if (updating) const LinearProgressIndicator(),
+                  if (updating || (selected?.running ?? false))
+                    const LinearProgressIndicator(),
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 6),
                     child: SelectableText(status, style: text.bodySmall),
@@ -468,14 +760,22 @@ class _WorkspaceState extends State<Workspace> {
   }
 }
 
-class DownloadRequest {
-  const DownloadRequest(this.url, this.folder, this.name);
-  final String url, folder, name;
-}
-
 class NewDownload extends StatefulWidget {
-  const NewDownload({super.key, required this.initialFolder});
+  const NewDownload({
+    super.key,
+    required this.initialFolder,
+    required this.buildRequest,
+    required this.openOptions,
+  });
   final String initialFolder;
+  final AdvancedRequest Function(String input, String folder, String name)
+  buildRequest;
+  final Future<AdvancedRequest?> Function(
+    String input,
+    String folder,
+    String name,
+  )
+  openOptions;
 
   @override
   State<NewDownload> createState() => _NewDownloadState();
@@ -486,6 +786,7 @@ class _NewDownloadState extends State<NewDownload> {
   final url = TextEditingController();
   final name = TextEditingController();
   late final folder = TextEditingController(text: widget.initialFolder);
+  String? localInput;
 
   @override
   void dispose() {
@@ -499,7 +800,11 @@ class _NewDownloadState extends State<NewDownload> {
     if (form.currentState!.validate()) {
       Navigator.pop(
         context,
-        DownloadRequest(url.text.trim(), folder.text.trim(), name.text.trim()),
+        widget.buildRequest(
+          url.text.trim(),
+          Directory(folder.text.trim()).absolute.path,
+          name.text.trim(),
+        ),
       );
     }
   }
@@ -518,17 +823,31 @@ class _NewDownloadState extends State<NewDownload> {
             TextFormField(
               autofocus: true,
               controller: url,
-              decoration: const InputDecoration(
-                labelText: '下载链接',
+              decoration: InputDecoration(
+                labelText: '链接或本地清单',
                 hintText: 'https://…',
+                suffixIcon: IconButton(
+                  tooltip: '选择本地清单',
+                  icon: const Icon(Icons.file_open_outlined),
+                  onPressed: () async {
+                    final file = await openFile();
+                    if (file != null && mounted) {
+                      localInput = file.path;
+                      url.text = file.path;
+                    }
+                  },
+                ),
               ),
               validator: (value) {
+                if (localInput != null && value?.trim() == localInput) {
+                  return null;
+                }
                 final uri = Uri.tryParse(value?.trim() ?? '');
                 return uri != null &&
                         (uri.scheme == 'https' || uri.scheme == 'http') &&
                         uri.host.isNotEmpty
                     ? null
-                    : '请输入完整的 HTTP 或 HTTPS 链接';
+                    : '请输入完整链接或选择本地清单';
               },
               onFieldSubmitted: (_) => submit(),
             ),
@@ -562,6 +881,24 @@ class _NewDownloadState extends State<NewDownload> {
       TextButton(
         onPressed: () => Navigator.pop(context),
         child: const Text('取消'),
+      ),
+      OutlinedButton(
+        onPressed: () async {
+          final output = folder.text.trim();
+          if (output.isEmpty) {
+            form.currentState!.validate();
+            return;
+          }
+          final request = await widget.openOptions(
+            url.text.trim(),
+            Directory(output).absolute.path,
+            name.text.trim(),
+          );
+          if (request != null && context.mounted) {
+            Navigator.pop(context, request);
+          }
+        },
+        child: const Text('高级选项'),
       ),
       FilledButton(onPressed: submit, child: const Text('开始下载')),
     ],

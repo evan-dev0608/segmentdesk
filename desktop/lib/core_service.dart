@@ -1,50 +1,73 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:ffi';
+import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 
-class CoreInstall {
-  const CoreInstall(this.executable, this.tag);
-  final String executable;
-  final String tag;
+Uri? parseUpdateProxy(String value) {
+  final uri = Uri.tryParse(value.trim());
+  if (uri == null ||
+      !const {'http', 'https', 'socks5', 'socks5h'}.contains(uri.scheme) ||
+      uri.host.isEmpty ||
+      !uri.hasPort ||
+      uri.port < 1 ||
+      uri.port > 65535 ||
+      uri.userInfo.isNotEmpty ||
+      (uri.path.isNotEmpty && uri.path != '/') ||
+      uri.hasQuery ||
+      uri.hasFragment) {
+    return null;
+  }
+  return uri;
 }
 
-class CoreService {
-  static const repository = 'nilaoda/N_m3u8DL-RE';
-  static final sep = Platform.pathSeparator;
-  static final home =
-      Platform.environment['USERPROFILE'] ??
-      Platform.environment['HOME'] ??
-      Directory.current.path;
-  static String get executable =>
-      Platform.isWindows ? 'N_m3u8DL-RE.exe' : 'N_m3u8DL-RE';
-  static Directory get data {
-    final base = Platform.isWindows
-        ? Platform.environment['LOCALAPPDATA'] ?? '$home/AppData/Local'
-        : Platform.isMacOS
-        ? '$home/Library/Application Support'
-        : Platform.environment['XDG_DATA_HOME'] ?? '$home/.local/share';
-    return Directory('$base/StreamDownloadGUI');
-  }
+class CoreNetworkException implements Exception {
+  const CoreNetworkException(this.code, this.details);
+  final int code;
+  final String details;
 
-  Future<CoreInstall?> installed() async {
-    final state = File('${data.path}/active.json');
-    if (!await state.exists()) return null;
-    final record =
-        jsonDecode(await state.readAsString()) as Map<String, dynamic>;
-    final directory = record['directory'] as String;
-    if (!RegExp(r'^core-[A-Za-z0-9_-]+$').hasMatch(directory)) {
-      throw const FormatException('核心目录无效');
-    }
-    final candidate = File('${data.path}/$directory/$executable');
-    if (!await candidate.exists()) return null;
-    return CoreInstall(candidate.path, record['tag'] as String);
-  }
+  @override
+  String toString() => switch (code) {
+    5 ||
+    6 ||
+    7 ||
+    28 ||
+    35 ||
+    60 => '无法连接 GitHub。请检查网络，或在「设置 → 下载核心」填写更新代理后重试。',
+    _ => '访问 GitHub 失败：$details',
+  };
+}
 
-  Future<Uri> _download(Uri url, File target) async {
-    final result = await Process.run('curl', [
+class CoreInstall {
+  const CoreInstall(this.executable, this.tag, {this.verified = true});
+  final String executable;
+  final String tag;
+
+  /// 本次安装是否实际执行了发行包完整性校验。
+  /// GitHub 官方发行页的回退路径拿不到 size / digest，两段校验会被跳过。
+  final bool verified;
+}
+
+/// 核心安装依赖的全部外部命令。测试可整体替换，
+/// 从而在不联网、不调用系统 curl / tar 的前提下跑完整链路。
+abstract class CoreRunner {
+  Future<ProcessResult> run(String executable, List<String> arguments);
+  Future<Uri> download(Uri url, File target, Uri? proxy);
+  Future<void> extract(String archive, String entry, File target);
+}
+
+class SystemCoreRunner implements CoreRunner {
+  const SystemCoreRunner();
+
+  @override
+  Future<ProcessResult> run(String executable, List<String> arguments) =>
+      Process.run(executable, arguments);
+
+  @override
+  Future<Uri> download(Uri url, File target, Uri? proxy) async {
+    final result = await run('curl', [
       '--disable',
+      if (proxy != null) ...['--proxy', proxy.toString(), '--noproxy', ''],
       '--fail',
       '--silent',
       '--show-error',
@@ -66,14 +89,73 @@ class CoreService {
       url.toString(),
     ]);
     if (result.exitCode != 0) {
-      throw StateError((result.stderr as String).trim());
+      throw CoreNetworkException(
+        result.exitCode,
+        (result.stderr as String).trim(),
+      );
     }
     return Uri.parse((result.stdout as String).trim());
   }
 
-  Future<CoreInstall> update(void Function(String) status) async {
-    await data.create(recursive: true);
-    final stage = await data.createTemp('update-');
+  @override
+  Future<void> extract(String archive, String entry, File target) async {
+    final extraction = await Process.start('tar', [
+      '-xOf',
+      archive,
+      '--',
+      entry,
+    ]);
+    final drain = extraction.stderr.drain<void>();
+    await extraction.stdout.pipe(target.openWrite());
+    await drain;
+    if (await extraction.exitCode != 0) throw StateError('解包失败');
+  }
+}
+
+class CoreService {
+  CoreService({CoreRunner? runner, this.dataDirectory})
+    : runner = runner ?? const SystemCoreRunner();
+
+  final CoreRunner runner;
+  final Directory? dataDirectory;
+
+  static const repository = 'nilaoda/N_m3u8DL-RE';
+  static final sep = Platform.pathSeparator;
+  static final home =
+      Platform.environment['USERPROFILE'] ??
+      Platform.environment['HOME'] ??
+      Directory.current.path;
+  static String get executable =>
+      Platform.isWindows ? 'N_m3u8DL-RE.exe' : 'N_m3u8DL-RE';
+  static Directory get data {
+    final base = Platform.isWindows
+        ? Platform.environment['LOCALAPPDATA'] ?? '$home/AppData/Local'
+        : Platform.isMacOS
+        ? '$home/Library/Application Support'
+        : Platform.environment['XDG_DATA_HOME'] ?? '$home/.local/share';
+    return Directory('$base/StreamDownloadGUI');
+  }
+
+  /// 测试注入的数据目录；生产仍使用平台默认目录。
+  Directory get workingData => dataDirectory ?? data;
+
+  Future<CoreInstall?> installed() async {
+    final state = File('${workingData.path}/active.json');
+    if (!await state.exists()) return null;
+    final record =
+        jsonDecode(await state.readAsString()) as Map<String, dynamic>;
+    final directory = record['directory'] as String;
+    if (!RegExp(r'^core-[A-Za-z0-9_-]+$').hasMatch(directory)) {
+      throw const FormatException('核心目录无效');
+    }
+    final candidate = File('${workingData.path}/$directory/$executable');
+    if (!await candidate.exists()) return null;
+    return CoreInstall(candidate.path, record['tag'] as String);
+  }
+
+  Future<CoreInstall> update(void Function(String) status, {Uri? proxy}) async {
+    await workingData.create(recursive: true);
+    final stage = await workingData.createTemp('update-');
     try {
       final metadata = File('${stage.path}/release');
       final official = 'https://github.com/$repository/releases';
@@ -82,9 +164,10 @@ class CoreService {
       final checks = <String, Map<String, dynamic>>{};
       status('正在检查 GitHub 发行版…');
       try {
-        await _download(
+        await runner.download(
           Uri.parse('https://api.github.com/repos/$repository/releases/latest'),
           metadata,
+          proxy,
         );
         final release =
             jsonDecode(await metadata.readAsString()) as Map<String, dynamic>;
@@ -94,16 +177,21 @@ class CoreService {
           checks[asset['browser_download_url'] as String] = asset;
         }
         urls = checks.keys.toList();
-      } on StateError {
-        final release = await _download(
+      } on CoreNetworkException {
+        final release = await runner.download(
           Uri.parse('$official/latest'),
           metadata,
+          proxy,
         );
         final match = RegExp('^/$repository/releases/tag/([\\w.-]+)\$')
             .firstMatch(release.path);
         if (match == null) throw StateError('无法识别 GitHub 官方发行版本');
         tag = match[1]!;
-        await _download(Uri.parse('$official/expanded_assets/$tag'), metadata);
+        await runner.download(
+          Uri.parse('$official/expanded_assets/$tag'),
+          metadata,
+          proxy,
+        );
         urls = RegExp('href="(/$repository/releases/download/[^"<>]+)"')
             .allMatches(await metadata.readAsString())
             .map((match) => 'https://github.com${match[1]}')
@@ -137,19 +225,22 @@ class CoreService {
       }
       status('正在下载核心 $tag…');
       final archive = File('${stage.path}/core.$extension');
-      await _download(Uri.parse(matching.single), archive);
-      status('正在验证并安装核心…');
+      await runner.download(Uri.parse(matching.single), archive, proxy);
       final check = checks[matching.single];
       final size = check?['size'];
+      final digest = check?['digest'];
+      // 官方发行页回退路径没有 asset 元数据，两段校验都会被跳过。
+      // 必须把「本次是否真的校验过」传给界面，不能默认显示成已验证。
+      final verified = size is int || digest is String;
+      status(verified ? '正在验证并安装核心…' : '正在安装核心（发行页回退，本次无校验信息）…');
       if (size is int && await archive.length() != size) {
         throw StateError('核心压缩包大小不一致');
       }
-      final digest = check?['digest'];
       if (digest is String &&
           digest != 'sha256:${await sha256.bind(archive.openRead()).first}') {
         throw StateError('核心压缩包校验失败');
       }
-      final listing = await Process.run('tar', ['-tf', archive.path]);
+      final listing = await runner.run('tar', ['-tf', archive.path]);
       if (listing.exitCode != 0) throw StateError('无法读取核心压缩包');
       final entries = const LineSplitter()
           .convert(listing.stdout as String)
@@ -159,29 +250,22 @@ class CoreService {
           )
           .toList();
       if (entries.length != 1) throw StateError('压缩包中的核心文件不唯一');
-      final target = await data.createTemp('core-');
+      final target = await workingData.createTemp('core-');
       try {
         final candidate = File('${target.path}/$executable');
-        final extraction = await Process.start('tar', [
-          '-xOf',
-          archive.path,
-          '--',
-          entries.single,
-        ]);
-        final drain = extraction.stderr.drain<void>();
-        await extraction.stdout.pipe(candidate.openWrite());
-        await drain;
-        if (await extraction.exitCode != 0) throw StateError('解包失败');
+        await runner.extract(archive.path, entries.single, candidate);
         if (!Platform.isWindows) {
-          final permissions = await Process.run('chmod', [
+          final permissions = await runner.run('chmod', [
             '755',
             candidate.path,
           ]);
-          if (permissions.exitCode != 0) throw StateError('无法设置核心执行权限');
+          if (permissions.exitCode != 0) {
+            throw StateError('无法设置核心执行权限');
+          }
         }
-        final probe = await Process.run(candidate.path, [
-          '--version',
-        ]).timeout(const Duration(seconds: 15));
+        final probe = await runner
+            .run(candidate.path, ['--version'])
+            .timeout(const Duration(seconds: 15));
         if (probe.exitCode != 0 ||
             !RegExp(r'\d+\.\d+').hasMatch(probe.stdout as String)) {
           throw StateError('无法运行新核心');
@@ -195,8 +279,8 @@ class CoreService {
             ),
           }),
         );
-        await pointer.rename('${data.path}/active.json');
-        return CoreInstall(candidate.path, tag);
+        await pointer.rename('${workingData.path}/active.json');
+        return CoreInstall(candidate.path, tag, verified: verified);
       } catch (_) {
         await target.delete(recursive: true);
         rethrow;

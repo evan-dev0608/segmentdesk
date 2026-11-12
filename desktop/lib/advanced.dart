@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 
 import 'core_output.dart';
 import 'core_service.dart';
+import 'selection.dart';
+import 'selection_dialog.dart';
 
 const toolLabels = {
   '': '下载',
@@ -46,10 +48,86 @@ List<CoreOption> parseCoreHelp(String help) {
   ];
 }
 
+/// 从根 --help 的 "Commands:" 段提取已注册的子命令名。
+///
+/// 上游的 UtilityHelpAction 直接委托 System.CommandLine 的标准 HelpAction，
+/// 该段只列子命令名、不含可执行文件名，因此核心被重命名也不会失效，
+/// 也不依赖 Usage 行的列宽。找不到该段时返回空集，由调用方兜底。
+Set<String> parseCoreCommands(String help) {
+  final lines = const LineSplitter().convert(help);
+  final heading = lines.indexWhere(
+    (line) => RegExp(r'^\s*Commands:\s*$', caseSensitive: false).hasMatch(line),
+  );
+  if (heading < 0) return const <String>{};
+  final commands = <String>{};
+  for (final line in lines.skip(heading + 1)) {
+    if (line.trim().isEmpty) continue;
+    // 段内条目至少缩进两格；顶格的下一节标题表示本段结束。
+    if (!RegExp(r'^\s{2,}').hasMatch(line)) break;
+    final match = RegExp(r'^\s{2,}([a-z][a-z0-9-]*)(?:\s{2,}|$)')
+        .firstMatch(line);
+    if (match != null) commands.add(match[1]!);
+  }
+  return commands;
+}
+
+/// 子命令 --help 的 Usage 行是否指向该子命令。
+/// 仅作 Commands: 段缺失时的兜底，且不硬编码可执行文件名。
+bool coreUsageMatchesCommand(String help, String command) {
+  final lines = const LineSplitter().convert(help);
+  final heading = lines.indexWhere(
+    (line) => line.trim().toLowerCase() == 'usage:',
+  );
+  if (heading < 0) return false;
+  final usage = lines
+      .skip(heading + 1)
+      .firstWhere((line) => line.trim().isNotEmpty, orElse: () => '');
+  return RegExp(
+    '^\\s*\\S+\\s+${RegExp.escape(command)}(?:\\s|\$)',
+    caseSensitive: false,
+  ).hasMatch(usage);
+}
+
+/// 把「读取轨道」的结果回填到高级选项表单。
+/// 手动选轨与 --auto-select true 互斥，因此有轨道选择时必须关闭自动选轨。
+Map<String, List<String>> applySelectionToValues(
+  Map<String, List<String>> values,
+  TrackSelection choice,
+) => {
+  ...values,
+  '--select-video': [choice.video ?? ''],
+  '--select-audio': [choice.audio ?? ''],
+  '--select-subtitle': [choice.subtitle ?? ''],
+  if (choice.partsShown) '--vod-drop-parts': [choice.dropParts ?? ''],
+  if (choice.hasTrack) '--auto-select': ['false'],
+};
+
+/// 把 IPTV 频道选择回填成一条 --select-video 表达式。
+Map<String, List<String>> applyChannelsToValues(
+  Map<String, List<String>> values,
+  List<String> channels,
+) => {
+  ...values,
+  '--select-video': [channelFilter(channels)],
+  '--auto-select': ['false'],
+};
+
 class AdvancedRequest {
-  const AdvancedRequest(this.title, this.directory, this.arguments);
+  const AdvancedRequest(
+    this.title,
+    this.directory,
+    this.arguments, {
+    this.tool = false,
+  });
   final String title, directory;
   final List<String> arguments;
+
+  /// 是否为上游工具子命令（concat / merge / mux / doctor）。
+  /// 这些子命令未注册根命令的 --ffmpeg-binary-path 等选项。
+  final bool tool;
+
+  /// doctor 的职责是检查本机环境（含全局配置文件），不能被配置隔离改变。
+  bool get isDoctor => tool && arguments.firstOrNull == 'doctor';
 }
 
 class AdvancedDialog extends StatefulWidget {
@@ -57,9 +135,15 @@ class AdvancedDialog extends StatefulWidget {
     super.key,
     required this.core,
     required this.directory,
+    this.initialInput = '',
+    this.initialName = '',
+    this.toolsOnly = false,
   });
   final CoreInstall core;
   final String directory;
+  final String initialInput;
+  final String initialName;
+  final bool toolsOnly;
 
   @override
   State<AdvancedDialog> createState() => _AdvancedDialogState();
@@ -78,13 +162,36 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
     '--select-audio',
     '--select-subtitle',
   };
-  final address = TextEditingController();
+  late final address = TextEditingController(text: widget.initialInput);
   final tools = <String, List<CoreOption>>{};
-  final values = <String, List<String>>{};
+  Map<String, List<String>> values = {};
   String mode = '';
   String query = '';
   String? error;
   bool loading = true;
+  bool probing = false;
+
+  /// 表单里是否存在核心提供的手动选轨选项。
+  bool get supportsTrackSelection =>
+      tools['']?.any((option) => option.flag == '--select-video') ?? false;
+
+  /// 旧发行版没有 --no-config；预览命令同样不能无条件塞入未知参数。
+  bool get supportsConfigIsolation =>
+      tools['']?.any((option) => option.flag == '--no-config') ?? false;
+
+  /// 从可重复/单值表单里取第一个有效值。
+  String? firstValue(String flag) {
+    for (final value in values[flag] ?? const <String>[]) {
+      final trimmed = value.trim();
+      if (trimmed.isNotEmpty && trimmed != '默认') return trimmed;
+    }
+    return null;
+  }
+
+  List<String> allValues(String flag) => (values[flag] ?? const <String>[])
+      .map((value) => value.trim())
+      .where((value) => value.isNotEmpty && value != '默认')
+      .toList();
 
   @override
   void initState() {
@@ -98,39 +205,55 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
     super.dispose();
   }
 
+  /// 读取核心帮助，中文乱码时回退英文。command 为空表示根帮助。
+  Future<String?> readHelp(String command) async {
+    Future<ProcessResult> helpFor(String language) => Process.run(
+      widget.core.executable,
+      [if (command.isNotEmpty) command, '--ui-language', language, '--help'],
+      stdoutEncoding: null,
+    ).timeout(const Duration(seconds: 12));
+    final result = await helpFor('zh-CN');
+    if (result.exitCode != 0) return null;
+    String help;
+    try {
+      help = decodeCoreOutput(result.stdout as List<int>);
+    } on FormatException {
+      help = '';
+    }
+    if (help.isEmpty || help.contains('\uFFFD')) {
+      final english = await helpFor('en-US');
+      if (english.exitCode != 0) return null;
+      help = utf8.decode(english.stdout as List<int>, allowMalformed: true);
+    }
+    return help;
+  }
+
   Future<void> load() async {
     try {
+      // 先取根帮助，从 Commands: 段确定核心实际注册了哪些工具子命令。
+      // 旧版核心会把 "concat --help" 解析成 input + --help 并照样返回 0，
+      // 所以退出码本身不是能力信号；Commands: 段才是。
+      final rootHelp = await readHelp('');
+      final registered = rootHelp == null
+          ? const <String>{}
+          : parseCoreCommands(rootHelp);
+      final candidates = toolLabels.keys
+          .where((command) => widget.toolsOnly == command.isNotEmpty)
+          .where(
+            (command) =>
+                command.isEmpty ||
+                registered.isEmpty ||
+                registered.contains(command),
+          )
+          .toList();
       final results = await Future.wait(
-        toolLabels.keys.map((command) async {
-          Future<ProcessResult> helpFor(String language) =>
-              Process.run(widget.core.executable, [
-                if (command.isNotEmpty) command,
-                '--ui-language',
-                language,
-                '--help',
-              ], stdoutEncoding: null).timeout(const Duration(seconds: 12));
-          final result = await helpFor('zh-CN');
-          if (result.exitCode != 0) return null;
-          String help;
-          try {
-            help = decodeCoreOutput(result.stdout as List<int>);
-          } on FormatException {
-            help = '';
-          }
-          if (help.isEmpty || help.contains('\uFFFD')) {
-            final english = await helpFor('en-US');
-            if (english.exitCode != 0) return null;
-            help = utf8.decode(
-              english.stdout as List<int>,
-              allowMalformed: true,
-            );
-          }
-          if (command.isNotEmpty &&
-              !RegExp(
-                '^\\s*N_m3u8DL-RE(?:\\.exe)?\\s+$command(?:\\s|\$)',
-                caseSensitive: false,
-                multiLine: true,
-              ).hasMatch(help)) {
+        candidates.map((command) async {
+          final help = command.isEmpty ? rootHelp : await readHelp(command);
+          if (help == null || help.isEmpty) return null;
+          // Commands: 段缺失时退回用法行判定，但不再硬编码可执行文件名。
+          if (registered.isEmpty &&
+              command.isNotEmpty &&
+              !coreUsageMatchesCommand(help, command)) {
             return null;
           }
           return MapEntry(command, parseCoreHelp(help));
@@ -142,7 +265,19 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
           results.whereType<MapEntry<String, List<CoreOption>>>(),
         );
         loading = false;
-        if (tools['']?.isNotEmpty != true) error = '无法读取当前核心的参数帮助。';
+        if (widget.toolsOnly) {
+          tools.remove('');
+          mode = tools.keys.firstOrNull ?? '';
+          if (tools.isEmpty) error = '当前核心未提供文件工具。';
+        } else {
+          tools.removeWhere((command, _) => command.isNotEmpty);
+          if (tools['']?.isNotEmpty != true) error = '无法读取当前核心的参数帮助。';
+          if (widget.initialName.isNotEmpty &&
+              tools['']?.any((option) => option.flag == '--save-name') ==
+                  true) {
+            values['--save-name'] = [widget.initialName];
+          }
+        }
       });
     } catch (exception) {
       if (mounted) {
@@ -152,6 +287,199 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
         });
       }
     }
+  }
+
+  String processHint(Object? output) {
+    if (output is! List<int> || output.isEmpty) return '';
+    final lines = const LineSplitter()
+        .convert(utf8.decode(output, allowMalformed: true))
+        .map(cleanCoreLogLine)
+        .whereType<String>()
+        .where((line) => line.isNotEmpty)
+        .toList();
+    if (lines.isEmpty) return '';
+    final tail = lines.length > 3 ? lines.sublist(lines.length - 3) : lines;
+    return ' · ${tail.join(' | ')}';
+  }
+
+  Object? readMetaJson(File file) {
+    var text = utf8.decode(file.readAsBytesSync(), allowMalformed: true);
+    if (text.startsWith('\uFEFF')) text = text.substring(1);
+    return jsonDecode(text);
+  }
+
+  /// 让核心只解析清单并写出 meta.json / meta_selected.json，再据此选轨。
+  Future<void> previewTracks() async {
+    final input = address.text.trim();
+    if (input.isEmpty || input.startsWith('-') || input.startsWith('@')) {
+      setState(() => error = '请先输入链接或选择本地清单。');
+      return;
+    }
+    setState(() {
+      probing = true;
+      error = null;
+    });
+    Directory? temporary;
+    try {
+      temporary = await Directory.systemTemp.createTemp('segmentdesk-preview-');
+      final child = await Process.start(
+        widget.core.executable,
+        previewArguments(
+          input: input,
+          tempDir: temporary.path,
+          values: values,
+          isolateConfig: supportsConfigIsolation,
+        ),
+        workingDirectory: widget.directory,
+      );
+      await child.stdin.close();
+      final stdout = <int>[];
+      final stderr = <int>[];
+      final draining = Future.wait([
+        child.stdout.forEach(stdout.addAll),
+        child.stderr.forEach(stderr.addAll),
+      ]);
+      // Future.timeout 不会终止子进程，必须在超时分支里显式 kill，
+      // 否则反复预览会留下继续解析清单的核心进程。
+      final code = await child.exitCode.timeout(
+        const Duration(seconds: 45),
+        onTimeout: () {
+          child.kill(ProcessSignal.sigkill);
+          return -1;
+        },
+      );
+      await draining;
+      if (code == -1) {
+        throw StateError('读取轨道超时（45 秒），已终止核心进程。');
+      }
+      final folder = Directory('${temporary.path}/$previewSaveName');
+      final metaFile = File('${folder.path}/meta.json');
+      if (!metaFile.existsSync()) {
+        throw StateError(
+          '核心未输出轨道信息（退出码 $code）'
+          '${processHint(stdout)}${processHint(stderr)}',
+        );
+      }
+      final all = readMetaJson(metaFile);
+      final selectedFile = File('${folder.path}/meta_selected.json');
+      final selected = selectedFile.existsSync()
+          ? readMetaJson(selectedFile)
+          : const <Object?>[];
+      final tracks = coreTracks(all);
+      // meta.json 先于 FetchPlayListAsync 写出，HLS 的 Playlist 可能为 null；
+      // 因此还要合并选中轨道元数据里的 DiscontinuitySequence。
+      final parts = vodParts([all, selected]);
+      if (tracks.isEmpty) {
+        throw StateError('核心输出的元数据中没有可用轨道。');
+      }
+      if (!mounted) return;
+      final choice = await showDialog<TrackSelection>(
+        context: context,
+        builder: (_) => TrackSelectionDialog(
+          tracks: tracks,
+          parts: parts,
+          supportsParts: supportsVodSelection,
+          initialDrop: firstValue('--vod-drop-parts') ?? '',
+        ),
+      );
+      if (choice != null && mounted) applyTrackSelection(choice);
+    } catch (exception) {
+      if (mounted) setState(() => error = '无法读取轨道：$exception');
+    } finally {
+      try {
+        temporary?.deleteSync(recursive: true);
+      } catch (_) {
+        // 临时目录清理失败不影响选择结果。
+      }
+      if (mounted) setState(() => probing = false);
+    }
+  }
+
+  void applyTrackSelection(TrackSelection choice) {
+    setState(() {
+      values = applySelectionToValues(values, choice);
+      query = '';
+      error = null;
+    });
+  }
+
+  Future<void> loadLocalChannels() async {
+    final file = await openFile(
+      acceptedTypeGroups: const [
+        XTypeGroup(label: 'M3U 播放列表', extensions: ['m3u', 'm3u8']),
+      ],
+    );
+    if (file == null || !mounted) return;
+    setState(() {
+      probing = true;
+      error = null;
+    });
+    try {
+      final content = utf8.decode(
+        await file.readAsBytes(),
+        allowMalformed: true,
+      );
+      await chooseChannels(file.path, parseChannels(content));
+    } catch (exception) {
+      if (mounted) setState(() => error = '无法读取 IPTV：$exception');
+    } finally {
+      if (mounted) setState(() => probing = false);
+    }
+  }
+
+  Future<void> loadRemoteChannels() async {
+    final input = address.text.trim();
+    if (!input.startsWith('http://') && !input.startsWith('https://')) {
+      setState(() => error = '请先在下载地址框粘贴 M3U 链接。');
+      return;
+    }
+    setState(() {
+      probing = true;
+      error = null;
+    });
+    try {
+      final cookiePath = firstValue('--cookies');
+      String? cookies;
+      if (cookiePath != null) {
+        final cookie = File(cookiePath);
+        cookies =
+            await (cookie.isAbsolute
+                    ? cookie
+                    : File('${widget.directory}/$cookiePath'))
+                .readAsString();
+      }
+      final systemProxy = firstValue('--use-system-proxy');
+      final content = await fetchRemotePlaylist(
+        input,
+        headers: allValues('--header'),
+        cookies: cookies,
+        proxy: firstValue('--custom-proxy'),
+        useSystemProxy: systemProxy != 'false' && systemProxy != '关闭',
+      );
+      await chooseChannels(input, parseChannels(content, base: input));
+    } catch (exception) {
+      if (mounted) setState(() => error = '无法读取 IPTV：$exception');
+    } finally {
+      if (mounted) setState(() => probing = false);
+    }
+  }
+
+  Future<void> chooseChannels(String source, List<String> channels) async {
+    if (channels.isEmpty) {
+      throw StateError('播放列表没有带名称的 HTTP(S) 频道');
+    }
+    if (!mounted) return;
+    final picked = await showDialog<List<String>>(
+      context: context,
+      builder: (_) => ChannelSelectionDialog(channels: channels),
+    );
+    if (picked == null || picked.isEmpty || !mounted) return;
+    setState(() {
+      address.text = source;
+      values = applyChannelsToValues(values, picked);
+      query = '';
+      error = null;
+    });
   }
 
   void submit() {
@@ -203,6 +531,7 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
             : toolLabels[mode]!,
         widget.directory,
         arguments,
+        tool: mode.isNotEmpty,
       ),
     );
   }
@@ -231,7 +560,9 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
               padding: const EdgeInsets.only(bottom: 4),
               child: option.placeholder == null || (choices?.length ?? 0) > 1
                   ? DropdownButtonFormField<String>(
-                      key: ValueKey('$mode:$flag:$index'),
+                      key: ValueKey(
+                        '$mode:$flag:$index:${entries[index].hashCode}',
+                      ),
                       initialValue: entries[index],
                       decoration: InputDecoration(labelText: flag),
                       items: [
@@ -300,13 +631,13 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
           '${option.flag} ${option.description}'.toLowerCase().contains(query),
     );
     return AlertDialog(
-      title: const Text('下载选项与工具'),
+      title: Text(widget.toolsOnly ? '文件工具' : '高级下载选项'),
       content: SizedBox(
         width: 620,
         height: 500,
         child: Column(
           children: [
-            if (loading) const LinearProgressIndicator(),
+            if (loading || probing) const LinearProgressIndicator(),
             if (!loading && available.isNotEmpty) ...[
               DropdownButtonFormField<String>(
                 initialValue: mode,
@@ -340,6 +671,33 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
                       },
                     ),
                   ),
+                ),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 6,
+                  children: [
+                    TextButton.icon(
+                      onPressed: probing || !supportsTrackSelection
+                          ? null
+                          : previewTracks,
+                      icon: const Icon(Icons.playlist_add_check_outlined),
+                      label: const Text('读取轨道'),
+                    ),
+                    TextButton.icon(
+                      onPressed: probing || !supportsTrackSelection
+                          ? null
+                          : loadLocalChannels,
+                      icon: const Icon(Icons.file_open_outlined),
+                      label: const Text('本地 IPTV'),
+                    ),
+                    TextButton.icon(
+                      onPressed: probing || !supportsTrackSelection
+                          ? null
+                          : loadRemoteChannels,
+                      icon: const Icon(Icons.cloud_download_outlined),
+                      label: const Text('远程 IPTV'),
+                    ),
+                  ],
                 ),
               ],
               const SizedBox(height: 10),

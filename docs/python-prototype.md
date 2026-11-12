@@ -1,6 +1,6 @@
 # 流媒体下载 GUI
 
-新版桌面界面位于 [Flutter 工程](../desktop/README.md)。以下说明适用于 Python 原型。
+新版桌面界面位于 [Flutter 工程](../desktop/README.md)。以下说明适用于 Python 原型。原型中的图形选轨、点播选段、本地与远程 IPTV 频道选择已迁移到 Flutter 版（见 [使用说明](usage.md#图形化选轨选段与-iptv-频道)）；本文件保留作为对照与原型自身的操作说明。
 
 Windows、macOS 和 Linux 桌面版，面向 x64 和 ARM64。
 
