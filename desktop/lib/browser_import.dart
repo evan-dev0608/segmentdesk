@@ -8,6 +8,28 @@ class BrowserImport {
   final String title;
   final String type;
 
+  String get suggestedName {
+    final cleaned = title
+        .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f\x7f]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim()
+        .replaceAll(RegExp(r'^[. ]+|[. ]+$'), '');
+    final name = StringBuffer();
+    var bytes = 0;
+    for (final rune in cleaned.runes) {
+      final character = String.fromCharCode(rune);
+      bytes += utf8.encode(character).length;
+      if (bytes > 150) break;
+      name.write(character);
+    }
+    final stem = name.toString().replaceFirst(RegExp(r'[. ]+$'), '');
+    final reserved = RegExp(
+      r'^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³]) *(?:\.|$)|^[-@]',
+      caseSensitive: false,
+    );
+    return reserved.hasMatch(stem) ? '_$stem' : stem;
+  }
+
   bool get canImport => const {'HLS', 'DASH', 'MSS', 'M3U'}.contains(type);
 
   static BrowserImport? parse(String payload) {

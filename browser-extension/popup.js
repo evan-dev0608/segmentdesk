@@ -1,4 +1,12 @@
-import { inspectHls } from './media.mjs';
+import { groupMedia, inspectHls } from './media.mjs';
+
+function formatDuration(duration) {
+  if (!duration) return null;
+  const seconds = Math.round(duration);
+  const minutes = Math.floor(seconds / 60);
+  return [Math.floor(minutes / 60), minutes % 60, seconds % 60]
+    .map(value => String(value).padStart(2, '0')).join(':');
+}
 
 const button = document.querySelector('#capture');
 const status = document.querySelector('#status');
@@ -19,8 +27,6 @@ if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
   let currentState;
   const inspections = new Map();
   const sending = new Set();
-  const variants = document.querySelector('#variants');
-  const variantResults = document.querySelector('#variant-results');
 
   function render(state) {
     currentState = state;
@@ -34,27 +40,41 @@ if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
     button.textContent = active ? '停止检测' : '开始检测';
     button.setAttribute('aria-pressed', String(active));
     const items = state?.items ?? [];
-    count.textContent = `${items.length} 项`;
     empty.hidden = items.length > 0;
     emptyTitle.textContent = active ? '正在等待媒体' : '还没有媒体';
     emptyDescription.textContent = active
       ? '请播放视频。已经在播放时，可以刷新页面。'
       : '开始检测后，在网页上播放视频。';
     results.replaceChildren();
-    variantResults.replaceChildren();
-    for (const { url, type } of items.slice(0, 12)) {
-      if (type !== 'HLS' || inspections.has(url)) continue;
-      inspections.set(url, []);
-      inspectHls(url).then(children => {
-        if (!children.length) return;
-        inspections.set(url, children);
+    const groups = groupMedia(items, inspections);
+    const ordered = groups.flatMap(({ item, options }) => [item, ...options]);
+    count.textContent = `${groups.length} 组 · ${ordered.length} 项`;
+    for (const { url, type } of ordered.slice(0, 12)) {
+      if (type !== 'HLS' || inspections.has(url) || inspections.size >= 24) continue;
+      inspections.set(url, null);
+      inspectHls(url).then(metadata => {
+        if (!metadata) return;
+        inspections.set(url, metadata);
         render(currentState);
       }).catch(() => {});
     }
-    const isMaster = item => Boolean(inspections.get(item.url)?.length);
-    const children = new Set(items.flatMap(item => inspections.get(item.url) ?? []));
-    const ordered = [...items].sort((a, b) => Number(isMaster(b)) - Number(isMaster(a)));
-    let variantCount = 0;
+    const containers = new Map();
+    const pageTitle = state?.pageTitle || (state?.pageUrl === tab.url ? tab.title : '') || page?.hostname;
+    for (const { item, options } of groups) {
+      const card = document.createElement('li');
+      card.className = 'media-group';
+      const title = document.createElement('h3');
+      title.textContent = pageTitle || item.filename || new URL(item.url).hostname;
+      title.title = title.textContent;
+      const list = document.createElement('ul');
+      list.className = 'media-options';
+      list.setAttribute('aria-label', '下载选项');
+      for (const option of [item, ...options]) {
+        containers.set(option, list);
+      }
+      card.append(title, list);
+      results.append(card);
+    }
     for (const item of ordered) {
       const row = document.createElement('li');
       const url = new URL(item.url);
@@ -64,15 +84,38 @@ if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
       const name = document.createElement('span');
       name.className = 'name';
       const filename = url.pathname.split('/').filter(Boolean).at(-1);
-      name.textContent = (item.type === 'MP4' ? tab.title : filename) || filename || '媒体资源';
-      const host = document.createElement('span');
-      host.className = 'meta';
-      const size = item.size ? new Intl.NumberFormat('zh-CN', {
-        style: 'unit', unit: item.size >= 1e9 ? 'gigabyte' : 'megabyte',
+      const host = document.createElement('dl');
+      host.className = 'media-facts';
+      const metadata = inspections.get(item.url);
+      const variant = item.variant;
+      const master = Boolean(metadata?.variants.length);
+      name.textContent = master ? '自动选轨 · 主清单' :
+        (item.filename || filename || '媒体资源');
+      const duration = item.duration ?? metadata?.duration ??
+        metadata?.variants.map(entry => inspections.get(entry.url)?.duration).find(Boolean);
+      const bitrate = variant?.average || variant?.bandwidth;
+      const estimated = duration && variant?.average ? duration * variant.average / 8 : null;
+      const bytes = item.size ?? estimated;
+      const size = bytes ? new Intl.NumberFormat('zh-CN', {
+        style: 'unit', unit: bytes >= 1e9 ? 'gigabyte' : 'megabyte',
         maximumFractionDigits: 2,
-      }).format(item.size / (item.size >= 1e9 ? 1e9 : 1e6)) : null;
-      host.textContent = [isMaster(item) ? 'HLS · 可选画质' : item.type, size, url.host]
-        .filter(Boolean).join(' · ');
+      }).format(bytes / (bytes >= 1e9 ? 1e9 : 1e6)) : null;
+      const details = [
+        ['类型', item.type],
+        ['画质', variant?.height ? `${variant.height}p` : null],
+        ['码率', bitrate ? `${Math.round(bitrate / 1000)} kbps` : null],
+        ['时长', formatDuration(duration)],
+        ['大小', size && (item.size ? size : `约 ${size}`)],
+      ];
+      for (const [key, value] of details) {
+        const fact = document.createElement('div');
+        const term = document.createElement('dt');
+        const definition = document.createElement('dd');
+        term.textContent = key;
+        definition.textContent = value ?? '—';
+        fact.append(term, definition);
+        host.append(fact);
+      }
       label.append(name, host);
       const copy = document.createElement('button');
       copy.className = 'copy';
@@ -100,13 +143,14 @@ if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
         try {
           const currentTab = await chrome.tabs.get(tab.id);
           if (currentTab.url !== (state?.pageUrl ?? tab.url) ||
-              !currentState?.items.some(candidate => candidate.url === item.url)) {
+              !groupMedia(currentState?.items ?? [], inspections).some(group =>
+                group.item.url === item.url || group.options.some(option => option.url === item.url))) {
             status.textContent = '页面已切换，请选择当前页面的媒体。';
             return;
           }
           const result = await chrome.runtime.sendNativeMessage('com.segmentdesk.import', {
             version: 1, url: item.url, type: item.type,
-            title: currentTab.title ?? '', source: currentTab.url,
+            title: pageTitle || currentTab.title || '', source: currentTab.url,
           });
           if (!result?.ok) throw new Error('Import failed');
           status.textContent = '已加入 SegmentDesk 导入队列。请在客户端查看。';
@@ -136,15 +180,8 @@ if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
         nextFocus = focusedAction === 'send' ? send : copy;
       }
       row.append(label, actions);
-      if (item.type === 'HLS' && !isMaster(item) && children.has(item.url)) {
-        variantResults.append(row);
-        variantCount++;
-      } else {
-        results.append(row);
-      }
+      containers.get(item).append(row);
     }
-    variants.hidden = variantCount === 0;
-    document.querySelector('#variant-label').textContent = `单画质清单（${variantCount}）`;
     nextFocus?.focus({ preventScroll: true });
   }
 

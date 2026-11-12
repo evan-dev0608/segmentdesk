@@ -235,6 +235,12 @@ void main() {
     );
     expect(find.text(url), findsOneWidget);
     expect(find.text('来自 Chrome · 示例视频'), findsOneWidget);
+    expect(find.text('示例视频'), findsOneWidget);
+    expect(
+      const BrowserImport('', '  CON: /视频? ', 'HLS').suggestedName,
+      'CON 视频',
+    );
+    expect(const BrowserImport('', 'CON.txt', 'HLS').suggestedName, '_CON.txt');
   });
 
   test('maps recognized upstream log phases', () {

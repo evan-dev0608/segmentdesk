@@ -1,6 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectMedia, hlsVariants } from './media.mjs';
+import { detectMedia, groupMedia, hlsMetadata, hlsVariants, responseFilename } from './media.mjs';
+
+test('groups declared HLS options by their own master and sorts by quality', () => {
+  const master = { type: 'HLS', url: 'https://cdn.test/master.m3u8' };
+  const low = { type: 'HLS', url: 'https://cdn.test/low.m3u8?sig=A%2Bb' };
+  const high = 'https://cdn.test/high.m3u8';
+  const unrelated = { type: 'MP4', url: 'https://cdn.test/other.mp4' };
+  const metadata = new Map([[master.url, { variants: [
+    { url: low.url, height: 360 }, { url: high, height: 1080 },
+  ] }]]);
+  const groups = groupMedia([low, master, unrelated], metadata);
+  assert.deepEqual(groups.map(group => group.item), [master, unrelated]);
+  assert.deepEqual(groups[0].options.map(option => option.url), [high, low.url]);
+});
+
+test('reads HLS quality and finite duration and leaves live duration unknown', () => {
+  const base = 'https://cdn.test/master.m3u8';
+  const master = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2400000,AVERAGE-BANDWIDTH=2000000,RESOLUTION=1280x720\nvideo.m3u8';
+  assert.deepEqual(hlsMetadata(master, base).variants[0], {
+    url: 'https://cdn.test/video.m3u8', height: 720, average: 2000000, bandwidth: 2400000,
+  });
+  const media = '#EXTM3U\n#EXTINF:8.5,\na.ts\n#EXTINF:7.5,\nb.ts';
+  assert.equal(hlsMetadata(media, base).duration, null);
+  assert.equal(hlsMetadata(media + '\n#EXT-X-ENDLIST', base).duration, 16);
+});
+
+test('prefers UTF-8 server filename and strips path components', () => {
+  assert.equal(responseFilename("attachment; filename=old.mp4; filename*=UTF-8''%E8%A7%86%E9%A2%91.mp4"), '视频.mp4');
+  assert.equal(responseFilename('attachment; filename="../movie.mp4"'), 'movie.mp4');
+});
 
 test('only groups exact variant URLs declared by an HLS master', () => {
   const master = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1200\nhi.m3u8?sig=A%2Bb\n' +

@@ -1,4 +1,4 @@
-import { detectMedia } from './media.mjs';
+import { detectMedia, responseFilename } from './media.mjs';
 
 const storage = chrome.storage.session;
 let pending = Promise.resolve();
@@ -20,9 +20,11 @@ async function recordCandidates(tabId, candidates, documentId) {
   for (const candidate of candidates) {
     const previous = known.get(candidate.url);
     if (previous) {
-      if (candidate.size && !previous.size) {
-        previous.size = candidate.size;
-        updated = true;
+      for (const field of ['size', 'filename', 'duration']) {
+        if (candidate[field] && !previous[field]) {
+          previous[field] = candidate[field];
+          updated = true;
+        }
       }
       continue;
     }
@@ -40,17 +42,31 @@ async function scanPage(tabId) {
   const frames = await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
     func: () => [
+      { pageTitle: document.querySelector('meta[property="og:title"]')?.content ||
+          document.title },
       ...performance.getEntriesByType('resource').map(
         entry => ({ url: entry.name, mime: entry.contentType }),
       ),
       ...Array.from(document.querySelectorAll('video, audio, source'))
         .flatMap(element => [element.currentSrc, element.src].filter(Boolean)
-          .map(url => ({ url, mime: element.type }))),
+          .map(url => ({
+            url, mime: element.type,
+            duration: url === element.currentSrc ? element.duration : null,
+          }))),
     ],
   });
-  const candidates = frames.flatMap(({ result }) => (result ?? []).flatMap(({ url, mime }) => {
+  const title = frames.find(frame => frame.frameId === 0)?.result?.[0]?.pageTitle;
+  if (title?.trim()) {
+    const key = String(tabId);
+    const state = (await storage.get(key))[key];
+    if (state?.active) {
+      await storage.set({ [key]: { ...state, pageTitle: title.trim().slice(0, 240) } });
+    }
+  }
+  const candidates = frames.flatMap(({ result }) => (result ?? []).flatMap(({ url, mime, duration }) => {
     const type = detectMedia(url, mime);
-    return type ? [{ type, url }] : [];
+    return type ? [{ type, url, ...(type === 'MP4' && Number.isFinite(duration) && duration > 0
+      ? { duration } : {}) }] : [];
   }));
   await recordCandidates(tabId, candidates);
 }
@@ -107,6 +123,8 @@ chrome.webRequest.onHeadersReceived.addListener(details => {
   const type = detectMedia(details.url, mime);
   if (!type) return;
   const candidate = { type, url: details.url };
+  const filename = responseFilename(headers.get('content-disposition'));
+  if (filename) candidate.filename = filename;
   if (type === 'MP4') {
     const total = details.statusCode === 206
       ? headers.get('content-range')?.match(/\/(\d+)$/)?.[1]

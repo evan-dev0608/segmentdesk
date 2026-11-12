@@ -1044,7 +1044,9 @@ class NewDownload extends StatefulWidget {
 class _NewDownloadState extends State<NewDownload> {
   final form = GlobalKey<FormState>();
   late final url = TextEditingController(text: widget.browserImport?.url);
-  final name = TextEditingController();
+  late final name = TextEditingController(
+    text: widget.browserImport?.suggestedName,
+  );
   late final folder = TextEditingController(text: widget.initialFolder);
   String? localInput;
 
