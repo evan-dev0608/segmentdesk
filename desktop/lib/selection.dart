@@ -329,6 +329,7 @@ List<String> previewArguments({
   required String tempDir,
   Map<String, List<String>> values = const {},
   bool isolateConfig = true,
+  String? ffmpeg,
 }) {
   final arguments = <String>[input];
   var explicitConfig = false;
@@ -348,6 +349,7 @@ List<String> previewArguments({
   // --config 与 --no-config 同时出现会让上游 ConfigFile.cs 抛 configFileConflict。
   if (isolateConfig && !explicitConfig) arguments.add('--no-config');
   arguments.addAll([
+    if (ffmpeg != null) ...['--ffmpeg-binary-path', ffmpeg],
     '--tmp-dir',
     tempDir,
     '--save-dir',

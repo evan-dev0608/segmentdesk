@@ -10,11 +10,21 @@ import 'package:stream_download/core_output.dart';
 import 'package:stream_download/core_service.dart';
 import 'package:stream_download/advanced.dart';
 import 'package:stream_download/browser_import.dart';
+import 'package:stream_download/client_updates.dart';
 import 'package:stream_download/main.dart';
 import 'package:stream_download/selection.dart';
 import 'package:stream_download/selection_dialog.dart';
 
 void main() {
+  test('compares stable client releases numerically', () {
+    expect(ClientUpdates.isNewer('v0.1.10', '0.1.9'), isTrue);
+    expect(ClientUpdates.isNewer('v0.1.9', '0.1.9'), isFalse);
+    expect(ClientUpdates.isNewer('v0.1.9', '0.1.10'), isFalse);
+    expect(
+      () => ClientUpdates.isNewer('v0.2.0-beta', '0.1.9'),
+      throwsFormatException,
+    );
+  });
   testWidgets('settings options open below their field', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -139,11 +149,15 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('当前生效路径'), findsOneWidget);
     expect(
-      tester.widget<SelectableText>(find.byType(SelectableText)).data,
+      tester
+          .widget<SelectableText>(
+            find.widgetWithText(SelectableText, executable),
+          )
+          .data,
       executable,
     );
     final label = tester.getRect(find.text('当前生效路径'));
-    final path = tester.getRect(find.byType(SelectableText));
+    final path = tester.getRect(find.widgetWithText(SelectableText, executable));
     expect(label.bottom, lessThanOrEqualTo(path.top));
     expect(
       find.byWidgetPredicate(
@@ -594,6 +608,16 @@ Options:
       final result = await service.update((_) {});
       expect(result.tag, 'v0.6.0');
       expect(runner.downloads, hasLength(1));
+      final release = await service.checkUpdate((_) {});
+      expect(release.tag, 'v0.6.0');
+      expect(runner.downloads, hasLength(2));
+      final repaired = await service.update(
+        (_) {},
+        release: release,
+        force: true,
+      );
+      expect(repaired.executable, isNot(result.executable));
+      expect(runner.downloads, hasLength(3));
     });
   });
 

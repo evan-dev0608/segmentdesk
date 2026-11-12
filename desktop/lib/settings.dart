@@ -5,6 +5,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import 'core_service.dart';
+import 'ffmpeg.dart';
 
 class Preferences {
   const Preferences(
@@ -15,6 +16,7 @@ class Preferences {
     this.imageSeed,
     this.updateProxy = '',
     this.corePath = '',
+    this.ffmpegPath = '',
   });
 
   static const accents = {
@@ -35,6 +37,7 @@ class Preferences {
   final int? imageSeed;
   final String updateProxy;
   final String corePath;
+  final String ffmpegPath;
   Color get seed => imageSeed == null ? accents[accent]!.$2 : Color(imageSeed!);
 
   factory Preferences.defaults() => Preferences(
@@ -90,6 +93,9 @@ class Preferences {
       corePath: data['corePath'] is String
           ? (data['corePath'] as String).trim()
           : '',
+      ffmpegPath: data['ffmpegPath'] is String
+          ? (data['ffmpegPath'] as String).trim()
+          : '',
     );
   }
 
@@ -107,6 +113,7 @@ class Preferences {
           if (imageSeed != null) 'imageSeed': imageSeed,
           'updateProxy': updateProxy,
           if (corePath.isNotEmpty) 'corePath': corePath,
+          if (ffmpegPath.isNotEmpty) 'ffmpegPath': ffmpegPath,
         }),
         flush: true,
       );
@@ -131,6 +138,11 @@ class SettingsPage extends StatefulWidget {
     required this.updatingCore,
     required this.onCoreUpdate,
     required this.onClientUpdate,
+    this.onCheckClientUpdate,
+    this.clientVersion,
+    this.clientUpdateStatus,
+    this.clientUpdateAvailable = false,
+    this.coreActionLabel,
   });
 
   final Preferences initial;
@@ -144,6 +156,11 @@ class SettingsPage extends StatefulWidget {
   final bool updatingCore;
   final ValueChanged<String>? onCoreUpdate;
   final VoidCallback onClientUpdate;
+  final VoidCallback? onCheckClientUpdate;
+  final String? clientVersion;
+  final String? clientUpdateStatus;
+  final bool clientUpdateAvailable;
+  final String? coreActionLabel;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -158,6 +175,27 @@ class _SettingsPageState extends State<SettingsPage> {
   late int? imageSeed = widget.initial.imageSeed;
   late final proxy = TextEditingController(text: widget.initial.updateProxy);
   late final corePath = TextEditingController(text: widget.initial.corePath);
+  late final ffmpegPath = TextEditingController(
+    text: widget.initial.ffmpegPath,
+  );
+  late bool customCore = widget.initial.corePath.isNotEmpty;
+  String? ffmpegResult;
+  bool testingFFmpeg = false;
+
+  Future<void> testFFmpeg() async {
+    setState(() => testingFFmpeg = true);
+    try {
+      final path = resolveFFmpeg(ffmpegPath.text.trim());
+      if (path == null) throw const FormatException('未找到 FFmpeg 可执行文件。');
+      final version = await inspectFFmpeg(path);
+      if (mounted) setState(() => ffmpegResult = 'FFmpeg $version\n$path');
+    } catch (exception) {
+      if (mounted) setState(() => ffmpegResult = '检测失败：$exception');
+    } finally {
+      if (mounted) setState(() => testingFFmpeg = false);
+    }
+  }
+
   bool saving = false;
   bool readingImage = false;
   String? error;
@@ -190,6 +228,7 @@ class _SettingsPageState extends State<SettingsPage> {
     folder.dispose();
     proxy.dispose();
     corePath.dispose();
+    ffmpegPath.dispose();
     super.dispose();
   }
 
@@ -207,13 +246,20 @@ class _SettingsPageState extends State<SettingsPage> {
       accent: accent,
       imageSeed: imageSeed,
       updateProxy: proxy.text.trim(),
-      corePath: corePath.text.trim(),
+      corePath: customCore ? corePath.text.trim() : '',
+      ffmpegPath: ffmpegPath.text.trim(),
     );
     setState(() {
       saving = true;
       error = null;
     });
     try {
+      if (preferences.ffmpegPath.isNotEmpty &&
+          preferences.ffmpegPath != widget.initial.ffmpegPath) {
+        final path = resolveFFmpeg(preferences.ffmpegPath);
+        if (path == null) throw const FormatException('请选择存在的 FFmpeg 可执行文件。');
+        await inspectFFmpeg(path);
+      }
       if (preferences.corePath.isNotEmpty &&
           preferences.corePath != widget.initial.corePath) {
         await CoreService.inspectExecutable(preferences.corePath);
@@ -392,52 +438,62 @@ class _SettingsPageState extends State<SettingsPage> {
                               const Divider(),
                               Text('下载核心', style: theme.textTheme.titleSmall),
                               const SizedBox(height: 12),
-                              TextFormField(
-                                controller: proxy,
-                                enabled: !saving,
-                                decoration: const InputDecoration(
-                                  labelText: '核心更新代理（可选）',
-                                  hintText: 'http://127.0.0.1:7890',
-                                  helperText: '仅用于从 GitHub 安装和更新核心。',
-                                ),
-                                validator: (value) {
-                                  if (value == null || value.trim().isEmpty) {
-                                    return null;
-                                  }
-                                  return parseUpdateProxy(value) == null
-                                      ? '请输入包含协议、主机和端口的代理地址'
-                                      : null;
-                                },
+                              _SettingsSelect<bool>(
+                                label: '核心来源',
+                                value: customCore,
+                                options: const {false: '托管核心', true: '自定义核心'},
+                                onChanged: saving || widget.updatingCore
+                                    ? null
+                                    : (value) =>
+                                          setState(() => customCore = value),
                               ),
-                              const SizedBox(height: 8),
-                              TextFormField(
-                                controller: corePath,
-                                enabled: !saving && !widget.updatingCore,
-                                decoration: InputDecoration(
-                                  labelText: '自定义核心路径',
-                                  helperText: '留空时使用 SegmentDesk 管理的核心。',
-                                  suffixIcon: IconButton(
-                                    tooltip: '选择核心可执行文件',
-                                    icon: const Icon(
-                                      Icons.folder_open_outlined,
-                                    ),
-                                    onPressed: saving || widget.updatingCore
-                                        ? null
-                                        : () async {
-                                            final selected = await openFile();
-                                            if (mounted &&
-                                                selected != null &&
-                                                !saving) {
-                                              corePath.text = selected.path;
-                                            }
-                                          },
+                              const SizedBox(height: 12),
+                              if (!customCore)
+                                TextFormField(
+                                  controller: proxy,
+                                  enabled: !saving,
+                                  decoration: const InputDecoration(
+                                    labelText: '核心更新代理（可选）',
+                                    hintText: 'http://127.0.0.1:7890',
+                                    helperText: '仅用于从 GitHub 安装和更新核心。',
                                   ),
+                                  validator: (value) {
+                                    if (value == null || value.trim().isEmpty) {
+                                      return null;
+                                    }
+                                    return parseUpdateProxy(value) == null
+                                        ? '请输入包含协议、主机和端口的代理地址'
+                                        : null;
+                                  },
                                 ),
-                              ),
-                              if (widget.initial.corePath.isNotEmpty)
-                                TextButton(
-                                  onPressed: saving ? null : corePath.clear,
-                                  child: const Text('恢复使用托管核心'),
+                              const SizedBox(height: 8),
+                              if (customCore)
+                                TextFormField(
+                                  controller: corePath,
+                                  enabled: !saving && !widget.updatingCore,
+                                  decoration: InputDecoration(
+                                    labelText: '自定义核心路径',
+                                    suffixIcon: IconButton(
+                                      tooltip: '选择核心可执行文件',
+                                      icon: const Icon(
+                                        Icons.folder_open_outlined,
+                                      ),
+                                      onPressed: saving || widget.updatingCore
+                                          ? null
+                                          : () async {
+                                              final selected = await openFile();
+                                              if (mounted &&
+                                                  selected != null &&
+                                                  !saving) {
+                                                corePath.text = selected.path;
+                                              }
+                                            },
+                                    ),
+                                  ),
+                                  validator: (value) =>
+                                      value == null || value.trim().isEmpty
+                                      ? '请选择核心可执行文件'
+                                      : null,
                                 ),
                               const SizedBox(height: 8),
                               if (widget.core case final installed?)
@@ -445,12 +501,23 @@ class _SettingsPageState extends State<SettingsPage> {
                                   tilePadding: EdgeInsets.zero,
                                   shape: const Border(),
                                   collapsedShape: const Border(),
-                                  title: Text(
-                                    installed.tag,
-                                    style: theme.textTheme.titleSmall,
+                                  title: Wrap(
+                                    spacing: 10,
+                                    runSpacing: 4,
+                                    crossAxisAlignment:
+                                        WrapCrossAlignment.center,
+                                    children: [
+                                      const Text('核心版本'),
+                                      Text(
+                                        installed.tag,
+                                        style: theme.textTheme.titleSmall,
+                                      ),
+                                    ],
                                   ),
                                   subtitle: Text(
-                                    '安装详情',
+                                    widget.initial.corePath.isEmpty
+                                        ? '托管核心 · 查看安装路径'
+                                        : '自定义核心 · 查看安装路径',
                                     style: theme.textTheme.bodySmall?.copyWith(
                                       color: theme.colorScheme.onSurfaceVariant,
                                     ),
@@ -506,46 +573,132 @@ class _SettingsPageState extends State<SettingsPage> {
                                       ? '正在检查下载环境…'
                                       : widget.environmentIssue ?? '未安装',
                                 ),
-                              if (widget.ffmpegAvailable == false)
-                                const Text('PATH 中未找到 FFmpeg。安装后请重启客户端。'),
                               const SizedBox(height: 12),
-                              Align(
-                                alignment: Alignment.centerLeft,
-                                child: OutlinedButton.icon(
-                                  onPressed:
-                                      widget.onCoreUpdate == null ||
-                                          widget.initial.corePath.isNotEmpty
-                                      ? null
-                                      : () {
-                                          final value = proxy.text.trim();
-                                          if (value.isNotEmpty &&
-                                              parseUpdateProxy(value) == null) {
-                                            form.currentState?.validate();
-                                            return;
-                                          }
-                                          widget.onCoreUpdate!(value);
-                                        },
-                                  icon: const Icon(Icons.system_update_alt),
-                                  label: Text(
-                                    widget.core == null ? '安装核心' : '检查核心更新',
+                              if (!customCore)
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: OutlinedButton.icon(
+                                    onPressed:
+                                        widget.onCoreUpdate == null ||
+                                            widget.initial.corePath.isNotEmpty
+                                        ? null
+                                        : () {
+                                            final value = proxy.text.trim();
+                                            if (value.isNotEmpty &&
+                                                parseUpdateProxy(value) ==
+                                                    null) {
+                                              form.currentState?.validate();
+                                              return;
+                                            }
+                                            widget.onCoreUpdate!(value);
+                                          },
+                                    icon: const Icon(Icons.system_update_alt),
+                                    label: Text(
+                                      widget.coreActionLabel ??
+                                          (widget.core == null
+                                              ? '安装核心'
+                                              : '检查核心更新'),
+                                    ),
                                   ),
                                 ),
-                              ),
                               if (widget.updatingCore)
                                 const LinearProgressIndicator(),
                               if (widget.coreUpdateStatus case final message?)
                                 Text(message, style: theme.textTheme.bodySmall),
                               const SizedBox(height: 24),
                               const Divider(),
+                              Text('FFmpeg', style: theme.textTheme.titleSmall),
+                              const SizedBox(height: 12),
+                              TextFormField(
+                                controller: ffmpegPath,
+                                enabled: !saving && !testingFFmpeg,
+                                onChanged: (_) =>
+                                    setState(() => ffmpegResult = null),
+                                decoration: InputDecoration(
+                                  labelText: 'FFmpeg 可执行文件',
+                                  helperText: '留空时从 PATH 自动查找。',
+                                  suffixIcon: IconButton(
+                                    tooltip: '选择 FFmpeg',
+                                    icon: const Icon(
+                                      Icons.folder_open_outlined,
+                                    ),
+                                    onPressed: saving || testingFFmpeg
+                                        ? null
+                                        : () async {
+                                            final selected = await openFile();
+                                            if (mounted &&
+                                                selected != null &&
+                                                !saving) {
+                                              setState(() {
+                                                ffmpegPath.text = selected.path;
+                                                ffmpegResult = null;
+                                              });
+                                            }
+                                          },
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              if (ffmpegResult case final result?)
+                                SelectableText(
+                                  result,
+                                  style: theme.textTheme.bodySmall,
+                                )
+                              else if (widget.ffmpegAvailable == false)
+                                const Text('未找到 FFmpeg，请指定路径。')
+                              else if (resolveFFmpeg(widget.initial.ffmpegPath)
+                                  case final path?)
+                                SelectableText(
+                                  '当前路径 · $path',
+                                  style: theme.textTheme.bodySmall,
+                                ),
+                              Wrap(
+                                spacing: 8,
+                                children: [
+                                  OutlinedButton(
+                                    onPressed: saving || testingFFmpeg
+                                        ? null
+                                        : testFFmpeg,
+                                    child: Text(
+                                      testingFFmpeg ? '正在测试…' : '测试 FFmpeg',
+                                    ),
+                                  ),
+                                  TextButton(
+                                    onPressed: saving || testingFFmpeg
+                                        ? null
+                                        : () {
+                                            setState(() {
+                                              ffmpegPath.clear();
+                                              ffmpegResult = null;
+                                            });
+                                          },
+                                    child: const Text('恢复自动查找'),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 24),
+                              const Divider(),
                               Text('客户端', style: theme.textTheme.titleSmall),
                               const SizedBox(height: 8),
-                              Align(
-                                alignment: Alignment.centerLeft,
-                                child: TextButton.icon(
-                                  onPressed: widget.onClientUpdate,
-                                  icon: const Icon(Icons.open_in_new),
-                                  label: const Text('查看客户端更新'),
-                                ),
+                              Text('当前版本 ${widget.clientVersion ?? '—'}'),
+                              if (widget.clientUpdateStatus case final message?)
+                                Text(message, style: theme.textTheme.bodySmall),
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 8,
+                                children: [
+                                  OutlinedButton.icon(
+                                    onPressed: widget.onCheckClientUpdate,
+                                    icon: const Icon(Icons.refresh),
+                                    label: const Text('检查客户端更新'),
+                                  ),
+                                  if (widget.clientUpdateAvailable)
+                                    TextButton.icon(
+                                      onPressed: widget.onClientUpdate,
+                                      icon: const Icon(Icons.open_in_new),
+                                      label: const Text('前往下载'),
+                                    ),
+                                ],
                               ),
                               if (error case final message?)
                                 Padding(

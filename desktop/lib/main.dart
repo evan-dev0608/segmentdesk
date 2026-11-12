@@ -3,12 +3,15 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'advanced.dart';
 import 'browser_import.dart';
+import 'client_updates.dart';
 import 'core_output.dart';
 import 'core_service.dart';
+import 'ffmpeg.dart';
 import 'settings.dart';
 
 void main() => runApp(const DownloadApp());
@@ -158,23 +161,6 @@ List<String> withFFmpegPath(List<String> arguments, String? ffmpeg) {
   return [...arguments, '--ffmpeg-binary-path', ffmpeg];
 }
 
-Future<String?> findFFmpegBinary() async {
-  try {
-    final result = await Process.run(Platform.isWindows ? 'where' : 'which', [
-      'ffmpeg',
-    ]);
-    if (result.exitCode != 0) return null;
-    final paths = const LineSplitter()
-        .convert((result.stdout as String).trim())
-        .map((line) => line.trim())
-        .where((line) => line.isNotEmpty)
-        .toList();
-    return paths.isEmpty ? null : paths.first;
-  } on ProcessException {
-    return null;
-  }
-}
-
 /// 上游 SimpleDownloadManager.cs 在 --check-segments-count false 时会
 /// 静默移除缺失分片并继续合并，可能返回退出码 0 且没有 ERROR 日志。
 bool hasDisabledSegmentCheck(List<String> arguments) {
@@ -234,6 +220,11 @@ class _WorkspaceState extends State<Workspace> {
   bool preferencesReady = false;
   bool checkingEnvironment = true;
   String? coreUpdateStatus;
+  CoreRelease? pendingCoreRelease;
+  String? clientVersion;
+  String? clientUpdateStatus;
+  String? availableClientTag;
+  bool checkingClientUpdate = false;
   String? environmentIssue;
   bool? ffmpegAvailable;
   Future<bool>? noConfigProbe;
@@ -251,6 +242,7 @@ class _WorkspaceState extends State<Workspace> {
   @override
   void initState() {
     super.initState();
+    unawaited(loadClientVersion());
     final inbox = BrowserImport.inbox;
     if (inbox != null) {
       browserImportTimer = Timer.periodic(
@@ -266,14 +258,7 @@ class _WorkspaceState extends State<Workspace> {
   }
 
   Future<void> checkEnvironment() async {
-    final windows = Platform.isWindows;
-    final executable = windows ? 'ffmpeg.exe' : 'ffmpeg';
-    final path = Platform.environment['PATH'] ?? '';
-    final foundFFmpeg = path.split(windows ? ';' : ':').any((entry) {
-      final directory = entry.replaceAll('"', '').trim();
-      return directory.isNotEmpty &&
-          File('$directory${CoreService.sep}$executable').existsSync();
-    });
+    final foundFFmpeg = resolveFFmpeg(preferences.ffmpegPath) != null;
     CoreInstall? active;
     String? issue;
     try {
@@ -305,8 +290,47 @@ class _WorkspaceState extends State<Workspace> {
     });
   }
 
+  Future<void> loadClientVersion() async {
+    try {
+      final version = await ClientUpdates.installedVersion();
+      if (!mounted) return;
+      setState(() => clientVersion = version);
+      if (kReleaseMode) await checkClientUpdate();
+    } catch (_) {
+      if (mounted) setState(() => clientUpdateStatus = '无法读取当前版本。');
+    }
+  }
+
+  Future<void> checkClientUpdate() async {
+    if (checkingClientUpdate) return;
+    setState(() {
+      checkingClientUpdate = true;
+      clientUpdateStatus = '正在检查 GitHub 正式版…';
+    });
+    try {
+      final version = clientVersion ?? await ClientUpdates.installedVersion();
+      final tag = await ClientUpdates.latestTag();
+      final newer = ClientUpdates.isNewer(tag, version);
+      if (!mounted) return;
+      setState(() {
+        clientVersion = version;
+        availableClientTag = newer ? tag : null;
+        clientUpdateStatus = newer ? '发现新版 $tag' : '已是最新正式版';
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() => clientUpdateStatus = '检查失败，请检查网络后重试。');
+      }
+    } finally {
+      if (mounted) setState(() => checkingClientUpdate = false);
+    }
+  }
+
   Future<void> openClientUpdates() async {
-    const releases = 'https://github.com/evan-dev0608/segmentdesk/releases';
+    final tag = availableClientTag;
+    final releases = tag == null
+        ? ClientUpdates.releases
+        : '${ClientUpdates.releases}/tag/${Uri.encodeComponent(tag)}';
     try {
       final result = await Process.run(
         Platform.isWindows
@@ -320,7 +344,7 @@ class _WorkspaceState extends State<Workspace> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('无法打开发布页：$releases')));
+          .showSnackBar(SnackBar(content: Text('无法打开发布页：$releases')));
     }
   }
 
@@ -400,17 +424,41 @@ class _WorkspaceState extends State<Workspace> {
   }
 
   Future<void> update(String proxy) async {
-    if (busy || checkingEnvironment) return;
+    if (busy || checkingEnvironment || preferences.corePath.isNotEmpty) return;
     setState(() => updating = true);
     try {
-      final value = await core.update((message) {
-        if (mounted) setState(() => coreUpdateStatus = message);
-      }, proxy: parseUpdateProxy(proxy));
+      final updateProxy = parseUpdateProxy(proxy);
+      final pending = pendingCoreRelease;
+      if (installed != null && pending == null) {
+        final release = await core.checkUpdate((message) {
+          if (mounted) setState(() => coreUpdateStatus = message);
+        }, proxy: updateProxy);
+        if (mounted) {
+          setState(() {
+            pendingCoreRelease = release;
+            coreUpdateStatus = installed?.tag == release.tag
+                ? '已是当前官方发行版 · ${release.tag}'
+                : '可用官方发行版 · ${release.tag}';
+          });
+        }
+        return;
+      }
+      final value = await core.update(
+        (message) {
+          if (mounted) setState(() => coreUpdateStatus = message);
+        },
+        proxy: updateProxy,
+        release: pending,
+        force:
+            environmentIssue != null ||
+            pending?.tag == installed?.tag && pending != null,
+      );
       if (mounted) {
         setState(() {
           installed = value;
           environmentIssue = null;
           noConfigProbe = null;
+          pendingCoreRelease = null;
           coreUpdateStatus = value.verified
               ? '核心已就绪 · ${value.tag}'
               : '核心已就绪 · ${value.tag}（本次未做完整性校验）';
@@ -456,6 +504,7 @@ class _WorkspaceState extends State<Workspace> {
             initialInput: input,
             initialName: name,
             initialContainer: preferences.container,
+            configuredFFmpeg: preferences.ffmpegPath,
           ),
         ),
       ),
@@ -475,7 +524,7 @@ class _WorkspaceState extends State<Workspace> {
   Future<void> openAdvanced({String? folder}) async {
     final active = installed;
     if (active == null || busy || !preferencesReady) return;
-    final ffmpeg = await findFFmpegBinary();
+    final ffmpeg = resolveFFmpeg(preferences.ffmpegPath);
     if (!mounted || busy) return;
     final request = await showDialog<AdvancedRequest>(
       context: context,
@@ -520,7 +569,12 @@ class _WorkspaceState extends State<Workspace> {
         );
       }
       if (!request.tool) {
-        final ffmpeg = await findFFmpegBinary();
+        final ffmpeg = resolveFFmpeg(preferences.ffmpegPath);
+        if (ffmpeg == null &&
+            preferences.ffmpegPath.isNotEmpty &&
+            !arguments.contains('--ffmpeg-binary-path')) {
+          throw StateError('自定义 FFmpeg 路径失效，请在设置中修正。');
+        }
         if (ffmpeg == null && mounted) {
           setState(() {
             task.log.add(
@@ -749,10 +803,28 @@ class _WorkspaceState extends State<Workspace> {
                 coreUpdateStatus: coreUpdateStatus,
                 updatingCore: updating,
                 onCoreUpdate: busy || checkingEnvironment ? null : update,
+                coreActionLabel: switch (pendingCoreRelease) {
+                  final release? =>
+                    release.tag == installed?.tag
+                        ? '重新安装核心'
+                        : '安装 ${release.tag}',
+                  _ =>
+                    installed == null && environmentIssue != null
+                        ? '重新安装核心'
+                        : null,
+                },
                 onClientUpdate: openClientUpdates,
+                onCheckClientUpdate: checkingClientUpdate
+                    ? null
+                    : checkClientUpdate,
+                clientVersion: clientVersion,
+                clientUpdateStatus: clientUpdateStatus,
+                clientUpdateAvailable: availableClientTag != null,
                 onClose: () => setState(() => showingSettings = false),
                 onSaved: (value) {
                   final changedCore = preferences.corePath != value.corePath;
+                  final changedFFmpeg =
+                      preferences.ffmpegPath != value.ffmpegPath;
                   applyPreferences(value);
                   setState(() {
                     showingSettings = false;
@@ -761,6 +833,10 @@ class _WorkspaceState extends State<Workspace> {
                       checkingEnvironment = true;
                       noConfigProbe = null;
                       coreUpdateStatus = null;
+                      pendingCoreRelease = null;
+                    }
+                    if (changedFFmpeg) {
+                      ffmpegAvailable = resolveFFmpeg(value.ffmpegPath) != null;
                     }
                   });
                   if (changedCore) unawaited(checkEnvironment());
@@ -907,6 +983,15 @@ class _WorkspaceState extends State<Workspace> {
                                               ? colors.errorContainer
                                               : colors.secondaryContainer,
                                         ),
+                                        if (task.state.startsWith('已完成'))
+                                          IconButton(
+                                            tooltip: '打开文件夹',
+                                            icon: const Icon(
+                                              Icons.folder_open_outlined,
+                                            ),
+                                            onPressed: () =>
+                                                openTaskFolder(task),
+                                          ),
                                         if (task.state.startsWith('已完成'))
                                           PopupMenuButton<String>(
                                             tooltip: '任务更多操作',

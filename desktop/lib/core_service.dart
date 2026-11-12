@@ -112,6 +112,12 @@ class SystemCoreRunner implements CoreRunner {
   }
 }
 
+typedef CoreRelease = ({
+  String tag,
+  List<String> urls,
+  Map<String, Map<String, dynamic>> checks,
+});
+
 class CoreService {
   static Future<CoreInstall> inspectExecutable(String path) async {
     final file = File(path);
@@ -185,7 +191,10 @@ class CoreService {
     return CoreInstall(candidate.path, record['tag'] as String);
   }
 
-  Future<CoreInstall> update(void Function(String) status, {Uri? proxy}) async {
+  Future<CoreRelease> checkUpdate(
+    void Function(String) status, {
+    Uri? proxy,
+  }) async {
     await workingData.create(recursive: true);
     final stage = await workingData.createTemp('update-');
     try {
@@ -230,8 +239,28 @@ class CoreService {
             .toSet()
             .toList();
       }
-      final current = await installed();
-      if (current?.tag == tag) return current!;
+      return (tag: tag, urls: urls, checks: checks);
+    } finally {
+      await stage.delete(recursive: true);
+    }
+  }
+
+  Future<CoreInstall> update(
+    void Function(String) status, {
+    Uri? proxy,
+    CoreRelease? release,
+    bool force = false,
+  }) async {
+    final (:tag, :urls, :checks) =
+        release ?? await checkUpdate(status, proxy: proxy);
+    final official = 'https://github.com/$repository/releases';
+    await workingData.create(recursive: true);
+    final stage = await workingData.createTemp('update-');
+    try {
+      if (!force) {
+        final current = await installed();
+        if (current?.tag == tag) return current!;
+      }
       final architecture = Abi.current().toString().split('_').last;
       if (architecture != 'x64' && architecture != 'arm64') {
         throw UnsupportedError('当前架构没有支持的官方发行包');

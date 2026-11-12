@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import 'core_output.dart';
 import 'core_service.dart';
+import 'ffmpeg.dart';
 import 'selection.dart';
 import 'selection_dialog.dart';
 
@@ -142,6 +143,7 @@ class AdvancedDialog extends StatefulWidget {
     this.initialContainer = 'none',
     this.toolsOnly = false,
     this.ffmpeg,
+    this.configuredFFmpeg = '',
   });
   final CoreInstall core;
   final String directory;
@@ -150,6 +152,7 @@ class AdvancedDialog extends StatefulWidget {
   final String initialContainer;
   final bool toolsOnly;
   final String? ffmpeg;
+  final String configuredFFmpeg;
 
   @override
   State<AdvancedDialog> createState() => _AdvancedDialogState();
@@ -375,6 +378,11 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
     Directory? temporary;
     try {
       temporary = await Directory.systemTemp.createTemp('segmentdesk-preview-');
+      final explicitFFmpeg = firstValue('--ffmpeg-binary-path');
+      final ffmpeg = explicitFFmpeg ?? resolveFFmpeg(widget.configuredFFmpeg);
+      if (ffmpeg == null && widget.configuredFFmpeg.isNotEmpty) {
+        throw StateError('自定义 FFmpeg 路径失效，请在设置中修正。');
+      }
       final child = await Process.start(
         widget.core.executable,
         previewArguments(
@@ -382,6 +390,7 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
           tempDir: temporary.path,
           values: values,
           isolateConfig: supportsConfigIsolation,
+          ffmpeg: ffmpeg,
         ),
         workingDirectory: widget.directory,
       );
