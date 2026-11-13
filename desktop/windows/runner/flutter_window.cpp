@@ -51,11 +51,6 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
-  // Resize the Flutter child even if a plugin handles the resize message.
-  if (message == WM_SIZE) {
-    Win32Window::MessageHandler(hwnd, message, wparam, lparam);
-  }
-
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =
@@ -72,7 +67,5 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       break;
   }
 
-  return message == WM_SIZE
-             ? 0
-             : Win32Window::MessageHandler(hwnd, message, wparam, lparam);
+  return Win32Window::MessageHandler(hwnd, message, wparam, lparam);
 }

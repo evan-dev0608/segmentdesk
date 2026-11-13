@@ -57,8 +57,12 @@ test('stores only opted-in tab manifests and preserves signed URLs', async () =>
     { name: 'Content-Length', value: '100' },
     { name: 'Content-Range', value: 'bytes 0-99/1000000000' },
   ] });
+  message({ action: 'media-metadata', url: mp4, duration: 12, height: 720 },
+    { tab: { id: 1 }, frameId: 0 });
   await command('stop', 1);
-  assert.deepEqual(data[1].items[0], { type: 'MP4', url: mp4, size: 1000000000 });
+  assert.deepEqual(data[1].items[0], {
+    type: 'MP4', url: mp4, size: 1000000000, duration: 12, height: 720,
+  });
   await command('start', 1);
   commit({ tabId: 1, frameId: 0, url: 'https://player.test/next', documentId: 'new' });
   request({ ...response, tabId: 1, frameId: 0, documentId: 'old' });

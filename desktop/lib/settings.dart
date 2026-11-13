@@ -252,7 +252,9 @@ class _SettingsPageState extends State<SettingsPage> {
       if (mounted) {
         setState(() {
           ffmpegPath.text = path;
-          ffmpegDownloadStatus = null;
+          ffmpegDownloadStatus = configuredFFmpegPath == widget.initial.ffmpegPath
+              ? 'FFmpeg 已下载，当前路径已启用'
+              : 'FFmpeg 已下载，保存设置后启用';
         });
         await readFFmpegVersion(path);
       }
@@ -534,7 +536,9 @@ class _SettingsPageState extends State<SettingsPage> {
                                 onDownload: canDownloadFFmpeg
                                     ? installFFmpeg
                                     : null,
-                                onPathChanged: () => setState(() {}),
+                                onPathChanged: () => setState(() {
+                                  ffmpegDownloadStatus = null;
+                                }),
                                 status:
                                     ffmpegDownloadStatus ??
                                     (ffmpegVersion != null &&
@@ -545,33 +549,25 @@ class _SettingsPageState extends State<SettingsPage> {
                               ),
                               const SizedBox(height: 24),
                               const Divider(),
-                              Text('客户端', style: theme.textTheme.titleSmall),
+                              Text('客户端更新', style: theme.textTheme.titleSmall),
                               const SizedBox(height: 8),
-                              _EnvironmentPanel(
+                              Wrap(
+                                spacing: 16,
+                                runSpacing: 8,
+                                crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
                                   Text(
                                     '当前版本 ${widget.clientVersion ?? '—'}',
                                     style: theme.textTheme.titleSmall,
                                   ),
-                                  if (widget.clientUpdateStatus
-                                      case final message?)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 4),
-                                      child: Text(
-                                        message,
-                                        style: theme.textTheme.bodySmall,
-                                      ),
-                                    ),
-                                  const SizedBox(height: 8),
                                   Wrap(
-                                    alignment: WrapAlignment.start,
                                     spacing: 8,
                                     runSpacing: 4,
                                     children: [
                                       OutlinedButton.icon(
                                         onPressed: widget.onCheckClientUpdate,
                                         icon: const Icon(Icons.refresh),
-                                        label: const Text('检查客户端更新'),
+                                        label: const Text('检查更新'),
                                       ),
                                       TextButton.icon(
                                         onPressed: widget.onClientUpdate,
@@ -586,6 +582,14 @@ class _SettingsPageState extends State<SettingsPage> {
                                   ),
                                 ],
                               ),
+                              if (widget.clientUpdateStatus case final message?)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Text(
+                                    message,
+                                    style: theme.textTheme.bodySmall,
+                                  ),
+                                ),
                               if (error case final message?)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 16),
@@ -717,29 +721,6 @@ class _ExecutableSetting extends StatelessWidget {
           const LinearProgressIndicator(),
         ],
       ],
-    );
-  }
-}
-
-class _EnvironmentPanel extends StatelessWidget {
-  const _EnvironmentPanel({required this.children});
-
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: colors.surface,
-        border: Border.all(color: colors.outlineVariant),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: children,
-      ),
     );
   }
 }

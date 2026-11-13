@@ -113,6 +113,19 @@ Map<String, List<String>> applyChannelsToValues(
   '--auto-select': ['false'],
 };
 
+const _binaryUnsupportedOptions = {
+  '-M',
+  '--mux-after-done',
+  '--mux-import',
+  '--custom-range',
+  '--key',
+  '--key-text-file',
+  '--save-pattern',
+};
+
+bool isBinaryDirectOptionSupported(String flag) =>
+    !_binaryUnsupportedOptions.contains(flag);
+
 class AdvancedRequest {
   const AdvancedRequest(
     this.title,
@@ -166,6 +179,7 @@ class AdvancedDialog extends StatefulWidget {
 }
 
 class _AdvancedDialogState extends State<AdvancedDialog> {
+  late bool direct = widget.direct;
   Future<void> remuxLocalFile() async {
     final ffmpeg = widget.ffmpeg;
     if (ffmpeg == null || probing) return;
@@ -228,7 +242,7 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
 
   /// 表单里是否存在核心提供的手动选轨选项；直链没有轨道元数据。
   bool get supportsTrackSelection =>
-      !widget.direct &&
+      !direct &&
       (tools['']?.any((option) => option.flag == '--select-video') ?? false);
 
   /// 旧发行版没有 --no-config；预览命令同样不能无条件塞入未知参数。
@@ -562,9 +576,11 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
       setState(() => error = '请输入链接或选择本地清单。');
       return;
     }
+    final binary = direct && mode.isEmpty;
     final chosen = <String, List<String>>{
       for (final entry in values.entries)
-        if (entry.value.any((value) => value.trim().isNotEmpty))
+        if ((!binary || isBinaryDirectOptionSupported(entry.key)) &&
+            entry.value.any((value) => value.trim().isNotEmpty))
           entry.key: entry.value
               .map((value) => value.trim())
               .where((value) => value.isNotEmpty)
@@ -605,7 +621,7 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
         widget.directory,
         arguments,
         tool: mode.isNotEmpty,
-        direct: widget.direct && mode.isEmpty,
+        direct: binary,
       ),
     );
   }
@@ -615,13 +631,34 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
 
   Widget optionRow(CoreOption option) {
     final flag = option.flag;
+    if (direct && mode.isEmpty && !isBinaryDirectOptionSupported(flag)) {
+      return ListTile(
+        enabled: false,
+        title: Text(option.description.isEmpty ? flag : option.description),
+        subtitle: Text('$flag · 直链模式下不可用'),
+      );
+    }
     final entries = values.putIfAbsent(flag, () => ['']);
     final label = option.description.isEmpty ? flag : option.description;
-    final choices = option.placeholder
-        ?.substring(1, option.placeholder!.length - 1)
-        .split('|');
-    final path = RegExp(r'file|path|dir|input|output|cookies|config')
-        .hasMatch(flag);
+    final acceptsHlsInput =
+        flag == '--custom-hls-key' || flag == '--custom-hls-iv';
+    final choices = <String, String>{
+      if (option.placeholder == null) ...{
+        '': '默认',
+        'true': '启用',
+        'false': '关闭',
+      } else if (!acceptsHlsInput && option.placeholder!.contains('|')) ...{
+        '': '默认',
+        for (final value
+            in option.placeholder!
+                .substring(1, option.placeholder!.length - 1)
+                .split('|'))
+          value: value,
+      },
+    };
+    final path =
+        acceptsHlsInput ||
+        RegExp(r'file|path|dir|input|output|cookies|config').hasMatch(flag);
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Column(
@@ -632,30 +669,46 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
           for (var index = 0; index < entries.length; index++)
             Padding(
               padding: const EdgeInsets.only(bottom: 4),
-              child: option.placeholder == null || (choices?.length ?? 0) > 1
+              child: choices.isNotEmpty && choices.length <= 4
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          flag,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        const SizedBox(height: 4),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 4,
+                          children: [
+                            for (final choice in choices.entries)
+                              ChoiceChip(
+                                label: Text(choice.value),
+                                selected: entries[index] == choice.key,
+                                onSelected: (selected) {
+                                  if (selected) {
+                                    setState(() => entries[index] = choice.key);
+                                  }
+                                },
+                              ),
+                          ],
+                        ),
+                      ],
+                    )
+                  : choices.isNotEmpty
                   ? DropdownButtonFormField<String>(
-                      key: ValueKey(
-                        '$mode:$flag:$index:${entries[index].hashCode}',
-                      ),
-                      initialValue: entries[index],
+                      key: ValueKey('$mode:$flag:$index:${entries[index]}'),
+                      initialValue: choices.containsKey(entries[index])
+                          ? entries[index]
+                          : null,
                       decoration: InputDecoration(labelText: flag),
                       items: [
-                        const DropdownMenuItem(value: '', child: Text('默认')),
-                        if (option.placeholder == null) ...[
-                          const DropdownMenuItem(
-                            value: 'true',
-                            child: Text('启用'),
+                        for (final choice in choices.entries)
+                          DropdownMenuItem(
+                            value: choice.key,
+                            child: Text(choice.value),
                           ),
-                          const DropdownMenuItem(
-                            value: 'false',
-                            child: Text('关闭'),
-                          ),
-                        ] else
-                          for (final choice in choices!)
-                            DropdownMenuItem(
-                              value: choice,
-                              child: Text(choice),
-                            ),
                       ],
                       onChanged: (value) => entries[index] = value ?? '',
                     )
@@ -801,14 +854,17 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
                           onPressed: () async {
                             final file = await openFile();
                             if (mounted && !probing && file != null) {
-                              address.text = file.path;
+                              setState(() {
+                                address.text = file.path;
+                                direct = false;
+                              });
                             }
                           },
                         ),
                       ),
                     ),
                     const SizedBox(height: 4),
-                    if (widget.direct)
+                    if (direct)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
                         child: Text(

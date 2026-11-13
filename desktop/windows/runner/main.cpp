@@ -18,6 +18,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
   flutter::DartProject project(L"data");
+#ifdef SEGMENTDESK_USE_IMPELLER
+  project.set_impeller_switch(flutter::ImpellerSwitch::Enabled);
+#else
+  // Use Skia on Windows: the default Impeller path can leave stale content
+  // visible after maximizing, even with the stock Flutter runner.
+  project.set_impeller_switch(flutter::ImpellerSwitch::Disabled);
+#endif
 
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();

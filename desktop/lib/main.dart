@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show FramePhase, FrameTiming;
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
@@ -14,7 +15,53 @@ import 'core_service.dart';
 import 'ffmpeg.dart';
 import 'settings.dart';
 
-void main() => runApp(const DownloadApp());
+void main(List<String> arguments) {
+  final binding = WidgetsFlutterBinding.ensureInitialized();
+  if (!kIsWeb &&
+      defaultTargetPlatform == TargetPlatform.windows &&
+      arguments.contains('--trace-window')) {
+    final trace = WindowRenderTrace(binding);
+    binding.addObserver(trace);
+    binding.addTimingsCallback(trace.onFrameTimings);
+    trace.recordMetrics('startup');
+  }
+  runApp(const DownloadApp());
+}
+
+class WindowRenderTrace with WidgetsBindingObserver {
+  WindowRenderTrace(this.binding);
+
+  final WidgetsBinding binding;
+  final File log = File(
+    '${Directory.systemTemp.path}${Platform.pathSeparator}'
+    'SegmentDesk-window-$pid.log',
+  );
+  Future<void> pending = Future<void>.value();
+
+  void recordMetrics(String event) {
+    final view = binding.platformDispatcher.implicitView;
+    if (view == null) return;
+    final line = '${DateTime.now().toIso8601String()} $event '
+        'physical=${view.physicalSize.width}x${view.physicalSize.height} '
+        'dpr=${view.devicePixelRatio}\n';
+    pending = pending
+        .then((_) => log.writeAsString(line, mode: FileMode.append))
+        .then<void>((_) {}, onError: (Object error) {
+          debugPrint('Window trace write failed: $error');
+        });
+  }
+
+  @override
+  void didChangeMetrics() => recordMetrics('metrics');
+
+  void onFrameTimings(List<FrameTiming> timings) {
+    if (timings.isEmpty) return;
+    final frame = timings.last;
+    recordMetrics('frames=${timings.length} '
+        'rasterEndUs=${frame.timestampInMicroseconds(FramePhase.rasterFinish)} '
+        'rasterUs=${frame.rasterDuration.inMicroseconds}');
+  }
+}
 
 class DownloadApp extends StatefulWidget {
   const DownloadApp({super.key});
@@ -34,8 +81,13 @@ class _DownloadAppState extends State<DownloadApp> {
     return ThemeData(
       colorScheme: colors,
       scaffoldBackgroundColor: colors.surface,
+      // Use one face for Chinese, Latin letters, and version numbers on Windows.
+      fontFamily: !kIsWeb && defaultTargetPlatform == TargetPlatform.windows
+          ? 'Microsoft YaHei UI'
+          : null,
       fontFamilyFallback: const [
         'Microsoft YaHei UI',
+        'Microsoft YaHei',
         'PingFang SC',
         'Noto Sans CJK SC',
       ],
@@ -179,39 +231,6 @@ bool hasDisabledSegmentCheck(List<String> arguments) {
     }
   }
   return false;
-}
-
-/// 上游 BinaryDownloadRunner.ValidateOptions 明确拒绝这 6 类选项：
-/// CustomRange / MuxAfterDone / MuxImports / Keys / KeyTextFile / SavePattern。
-/// 直链任务必须在启动前移除，否则核心会直接抛 ArgumentException。
-/// 这些选项都要求值，且 --key / --mux-import 允许连续多个值，
-/// 因此跳过其后所有不以 - 开头的 token。
-const _binaryUnsupportedOptions = {
-  '-M',
-  '--mux-after-done',
-  '--mux-import',
-  '--custom-range',
-  '--key',
-  '--key-text-file',
-  '--save-pattern',
-};
-
-List<String> binaryDirectArguments(List<String> arguments) {
-  final result = <String>[];
-  var index = 0;
-  while (index < arguments.length) {
-    final token = arguments[index];
-    if (_binaryUnsupportedOptions.contains(token)) {
-      index++;
-      while (index < arguments.length && !arguments[index].startsWith('-')) {
-        index++;
-      }
-      continue;
-    }
-    result.add(token);
-    index++;
-  }
-  return result;
 }
 
 /// 核心按响应内容而非扩展名分派输入，客户端启动前无法可靠预知结果。
@@ -377,6 +396,7 @@ class _WorkspaceState extends State<Workspace> {
     if (checkingClientUpdate) return;
     setState(() {
       checkingClientUpdate = true;
+      availableClientTag = null;
       clientUpdateStatus = '正在检查 GitHub 正式版…';
     });
     try {
@@ -512,7 +532,12 @@ class _WorkspaceState extends State<Workspace> {
           environmentIssue = null;
           noConfigProbe = null;
         }
-        coreUpdateStatus = value.verified ? '下载核心已就绪' : '下载核心已就绪（本次未做完整性校验）';
+        final activation = preferences.corePath.isEmpty
+            ? '官方核心已启用'
+            : '官方核心已下载，保存设置后启用';
+        coreUpdateStatus = value.verified
+            ? activation
+            : '$activation（本次未做完整性校验）';
       });
       return value;
     } catch (error) {
@@ -542,7 +567,7 @@ class _WorkspaceState extends State<Workspace> {
               '--ui-language',
               'zh-CN',
               '--disable-update-check',
-              if (preferences.container != 'none') ...[
+              if (!direct && preferences.container != 'none') ...[
                 '-M',
                 'format=${preferences.container}',
               ],
@@ -596,9 +621,6 @@ class _WorkspaceState extends State<Workspace> {
         request.arguments,
         isolate: canIsolate,
       );
-      if (request.direct) {
-        arguments = binaryDirectArguments(arguments);
-      }
       if (request.executable == null &&
           !canIsolate &&
           !request.isDoctor &&
@@ -612,7 +634,7 @@ class _WorkspaceState extends State<Workspace> {
         setState(() {
           task.log.add(
             '提示：二进制直链模式已忽略混流、范围、解密与命名模板参数；'
-            '文件名由核心按响应头或链接末段生成。',
+            '未填文件名时由核心推断；已填文件名没有扩展名时由核心补全。',
           );
         });
       }
@@ -675,8 +697,7 @@ class _WorkspaceState extends State<Workspace> {
               coreReportsUnsupportedBinary(line)) {
             unsupportedHinted = true;
             task.log.add(
-              '提示：当前核心不支持二进制直链。请在设置中指定支持该能力的核心路径，'
-              '或关闭「二进制直链」后重试。',
+              '提示：当前下载核心不支持此链接。可在「设置 → 下载核心」检查官方核心更新。',
             );
           }
           if (coreFailureSignal(line)) task.errorSignals++;
@@ -1223,8 +1244,12 @@ class _NewDownloadState extends State<NewDownload> {
                   onPressed: () async {
                     final file = await openFile();
                     if (file != null && mounted) {
-                      localInput = file.path;
-                      url.text = file.path;
+                      setState(() {
+                        localInput = file.path;
+                        url.text = file.path;
+                        direct = false;
+                        directTouched = false;
+                      });
                     }
                   },
                 ),
@@ -1277,7 +1302,9 @@ class _NewDownloadState extends State<NewDownload> {
                 directTouched = true;
               }),
               title: const Text('二进制直链（MP4 等单文件）'),
-              subtitle: const Text('自动忽略混流、范围、解密与命名模板参数'),
+              subtitle: const Text(
+                '开启后忽略混流、范围、解密与命名模板参数。实际支持范围由所选核心和链接决定。',
+              ),
               dense: true,
               contentPadding: EdgeInsets.zero,
               controlAffinity: ListTileControlAffinity.leading,

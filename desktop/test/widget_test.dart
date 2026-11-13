@@ -253,44 +253,24 @@ void main() {
     expect(coreTaskPhase('unrecognized'), isNull);
   });
 
-  test('strips options rejected by BinaryDownloadRunner', () {
-    final stripped = binaryDirectArguments([
-      'https://cdn.example.test/video.mp4',
-      '--save-dir',
-      'E:/Downloads',
-      '--auto-select',
-      '-M',
-      'format=mp4',
-      '--mux-after-done',
-      'format=mkv',
-      '--key',
-      'kid:key',
-      'kid2:key2',
-      '--mux-import',
-      'sub.srt',
-      '--custom-range',
-      '00:00:00-00:01:00',
-      '--key-text-file',
-      'keys.txt',
-      '--save-pattern',
-      '<SaveName>',
-      '--save-name',
-      'clip',
-      '--no-ansi-color',
-      '--no-config',
-    ]);
-    expect(stripped, [
-      'https://cdn.example.test/video.mp4',
-      '--save-dir',
-      'E:/Downloads',
-      '--auto-select',
-      '--save-name',
-      'clip',
-      '--no-ansi-color',
-      '--no-config',
-    ]);
-    // 不含被拒选项时参数原样保留。
-    expect(binaryDirectArguments(['u', '--no-config']), ['u', '--no-config']);
+  test('filters binary-incompatible options before serializing values', () {
+    final options = {
+      '-M': 'format=mp4',
+      '--mux-after-done': 'format=mkv',
+      '--mux-import': 'sub.srt',
+      '--custom-range': '-00:26',
+      '--key': 'kid:key',
+      '--key-text-file': 'keys.txt',
+      '--save-pattern': '<SaveName>',
+      '--save-name': 'clip.mp4',
+      '--header': 'Referer: https://example.test',
+    };
+    expect(
+      options.entries
+          .where((entry) => isBinaryDirectOptionSupported(entry.key))
+          .expand((entry) => [entry.key, entry.value]),
+      ['--save-name', 'clip.mp4', '--header', 'Referer: https://example.test'],
+    );
   });
 
   test('guesses binary direct links from the path or MIME hint', () {

@@ -64,7 +64,16 @@ jobs:
           $versionLine = Get-Content pubspec.yaml | Where-Object { $_ -match '^version:\s+\d+\.\d+\.\d+\+\d+$' }
           if (-not $versionLine) { throw 'Cannot read app version from pubspec.yaml' }
           $version = ($versionLine -split '[:+]')[1].Trim()
-          & $compiler "/DAppVersion=$version" 'packaging/windows/SegmentDesk.iss'
+          & $compiler "/DAppVersion=$version" '/FSegmentDesk-windows-x64-skia-setup' 'packaging/windows/SegmentDesk.iss'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $build = 'build/windows/x64'
+          $cmakeEntry = Select-String -Path "$build/CMakeCache.txt" -Pattern '^CMAKE_COMMAND:INTERNAL='
+          $cmake = ($cmakeEntry.Line -split '=', 2)[1]
+          & $cmake -S windows -B $build -DSEGMENTDESK_USE_IMPELLER=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter build windows --release --no-pub
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $compiler "/DAppVersion=$version" '/FSegmentDesk-windows-x64-impeller-setup' 'packaging/windows/SegmentDesk.iss'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test and package Chrome extension
         if: runner.os == 'Windows'
@@ -78,20 +87,22 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $target = Join-Path $env:RUNNER_TEMP 'SegmentDesk-install-test'
-          $setup = Start-Process -FilePath (Resolve-Path 'dist/SegmentDesk-windows-x64-setup.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="' + $target + '"')) -Wait -PassThru -WindowStyle Hidden
-          if ($setup.ExitCode -ne 0) { throw "Installer exited with code $($setup.ExitCode)" }
-          foreach ($entry in 'stream_download.exe', 'segmentdesk_import.exe', 'native_import.json', 'flutter_windows.dll', 'data/flutter_assets') {
-            if (-not (Test-Path -LiteralPath (Join-Path $target $entry))) { throw "Missing installed file: $entry" }
-          }
-          $hostKey = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.segmentdesk.import'
-          if ((Get-Item -LiteralPath $hostKey).GetValue('') -ne (Join-Path $target 'native_import.json')) {
-            throw 'Chrome native messaging host registration is missing or incorrect'
-          }
-          $uninstaller = Get-ChildItem -LiteralPath $target -Filter 'unins*.exe' | Select-Object -First 1
-          $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru -WindowStyle Hidden
-          if ($uninstall.ExitCode -ne 0 -or (Test-Path -LiteralPath (Join-Path $target 'stream_download.exe')) -or (Test-Path -LiteralPath $hostKey)) {
-            throw 'Uninstall smoke test failed'
+          foreach ($renderer in 'skia', 'impeller') {
+            $target = Join-Path $env:RUNNER_TEMP 'SegmentDesk-install-test'
+            $setup = Start-Process -FilePath (Resolve-Path "dist/SegmentDesk-windows-x64-$renderer-setup.exe") -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="' + $target + '"')) -Wait -PassThru -WindowStyle Hidden
+            if ($setup.ExitCode -ne 0) { throw "Installer exited with code $($setup.ExitCode)" }
+            foreach ($entry in 'stream_download.exe', 'segmentdesk_import.exe', 'native_import.json', 'flutter_windows.dll', 'data/flutter_assets') {
+              if (-not (Test-Path -LiteralPath (Join-Path $target $entry))) { throw "Missing installed file: $entry" }
+            }
+            $hostKey = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.segmentdesk.import'
+            if ((Get-Item -LiteralPath $hostKey).GetValue('') -ne (Join-Path $target 'native_import.json')) {
+              throw 'Chrome native messaging host registration is missing or incorrect'
+            }
+            $uninstaller = Get-ChildItem -LiteralPath $target -Filter 'unins*.exe' | Select-Object -First 1
+            $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru -WindowStyle Hidden
+            if ($uninstall.ExitCode -ne 0 -or (Test-Path -LiteralPath (Join-Path $target 'stream_download.exe')) -or (Test-Path -LiteralPath $hostKey)) {
+              throw 'Uninstall smoke test failed'
+            }
           }
       - name: Package macOS
         if: runner.os == 'macOS'
@@ -136,4 +147,4 @@ jobs:
         run: |
           cd dist
           sha256sum SegmentDesk-* > SHA256SUMS.txt
-          gh release create "$TAG" SegmentDesk-* SHA256SUMS.txt --verify-tag --latest --generate-notes --title "SegmentDesk $TAG"
+          gh release create "$TAG" SegmentDesk-* SHA256SUMS.txt --verify-tag --latest --generate-notes --notes "Windows x64 推荐 Skia 兼容版。Impeller 版使用 Flutter 默认渲染器，如遇最大化黑边可改装 Skia 版。两版共用设置和核心。" --title "SegmentDesk $TAG"

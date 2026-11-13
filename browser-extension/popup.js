@@ -48,15 +48,24 @@ if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
     results.replaceChildren();
     const groups = groupMedia(items, inspections);
     const ordered = groups.flatMap(({ item, options }) => [item, ...options]);
+    count.hidden = ordered.length === 0;
     count.textContent = `${groups.length} 组 · ${ordered.length} 项`;
     for (const { url, type } of ordered.slice(0, 12)) {
       if (type !== 'HLS' || inspections.has(url) || inspections.size >= 24) continue;
       inspections.set(url, null);
-      inspectHls(url).then(metadata => {
-        if (!metadata) return;
-        inspections.set(url, metadata);
-        render(currentState);
-      }).catch(() => {});
+      void (async () => {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (attempt) {
+            await new Promise(resolve => setTimeout(resolve, 1200));
+            if (!currentState?.items?.some(item => item.url === url)) return;
+          }
+          const metadata = await inspectHls(url).catch(() => null);
+          if (!metadata) continue;
+          inspections.set(url, metadata);
+          render(currentState);
+          return;
+        }
+      })();
     }
     const containers = new Map();
     const pageTitle = state?.pageTitle || (state?.pageUrl === tab.url ? tab.title : '') || page?.hostname;
@@ -93,6 +102,7 @@ if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
         (item.filename || filename || '媒体资源');
       const duration = item.duration ?? metadata?.duration ??
         metadata?.variants.map(entry => inspections.get(entry.url)?.duration).find(Boolean);
+      const height = variant?.height || item.height;
       const bitrate = variant?.average || variant?.bandwidth;
       const estimated = duration && variant?.average ? duration * variant.average / 8 : null;
       const bytes = item.size ?? estimated;
@@ -102,17 +112,18 @@ if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
       }).format(bytes / (bytes >= 1e9 ? 1e9 : 1e6)) : null;
       const details = [
         ['类型', item.type],
-        ['画质', variant?.height ? `${variant.height}p` : null],
+        ['画质', height ? `${height}p` : null],
         ['码率', bitrate ? `${Math.round(bitrate / 1000)} kbps` : null],
         ['时长', formatDuration(duration)],
         ['大小', size && (item.size ? size : `约 ${size}`)],
       ];
       for (const [key, value] of details) {
+        if (!value) continue;
         const fact = document.createElement('div');
         const term = document.createElement('dt');
         const definition = document.createElement('dd');
         term.textContent = key;
-        definition.textContent = value ?? '—';
+        definition.textContent = value;
         fact.append(term, definition);
         host.append(fact);
       }

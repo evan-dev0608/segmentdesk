@@ -20,7 +20,7 @@ async function recordCandidates(tabId, candidates, documentId) {
   for (const candidate of candidates) {
     const previous = known.get(candidate.url);
     if (previous) {
-      for (const field of ['size', 'filename', 'duration']) {
+      for (const field of ['size', 'filename', 'duration', 'height']) {
         if (candidate[field] && !previous[field]) {
           previous[field] = candidate[field];
           updated = true;
@@ -41,7 +41,19 @@ async function recordCandidates(tabId, candidates, documentId) {
 async function scanPage(tabId) {
   const frames = await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
-    func: () => [
+    func: () => {
+      if (!globalThis.segmentDeskMetadataListener) {
+        globalThis.segmentDeskMetadataListener = true;
+        document.addEventListener('loadedmetadata', ({ target }) => {
+          if (!(target instanceof HTMLMediaElement)) return;
+          const { currentSrc: url, duration, videoHeight: height } = target;
+          if (!url) return;
+          chrome.runtime.sendMessage({
+            action: 'media-metadata', url, duration, height,
+          }).catch(() => {});
+        }, true);
+      }
+      return [
       { pageTitle: document.querySelector('meta[property="og:title"]')?.content ||
           document.title },
       ...performance.getEntriesByType('resource').map(
@@ -52,8 +64,10 @@ async function scanPage(tabId) {
           .map(url => ({
             url, mime: element.type,
             duration: url === element.currentSrc ? element.duration : null,
+            height: url === element.currentSrc ? element.videoHeight : null,
           }))),
-    ],
+      ];
+    },
   });
   const title = frames.find(frame => frame.frameId === 0)?.result?.[0]?.pageTitle;
   if (title?.trim()) {
@@ -63,15 +77,31 @@ async function scanPage(tabId) {
       await storage.set({ [key]: { ...state, pageTitle: title.trim().slice(0, 240) } });
     }
   }
-  const candidates = frames.flatMap(({ result }) => (result ?? []).flatMap(({ url, mime, duration }) => {
+  const candidates = frames.flatMap(({ result }) => (result ?? []).flatMap(({ url, mime, duration, height }) => {
     const type = detectMedia(url, mime);
     return type ? [{ type, url, ...(type === 'MP4' && Number.isFinite(duration) && duration > 0
-      ? { duration } : {}) }] : [];
+      ? { duration } : {}), ...(type === 'MP4' && Number.isSafeInteger(height) && height > 0
+      ? { height } : {}) }] : [];
   }));
   await recordCandidates(tabId, candidates);
 }
 
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
+  if (message.action === 'media-metadata') {
+    const tabId = sender.tab?.id;
+    if (!Number.isInteger(tabId)) return;
+    const { url, duration, height } = message;
+    serialize(async () => {
+      const state = (await storage.get(String(tabId)))[String(tabId)];
+      if (!state?.active || !state.items.some(item => item.type === 'MP4' && item.url === url)) return;
+      await recordCandidates(tabId, [{
+        url, type: 'MP4',
+        ...(Number.isFinite(duration) && duration > 0 ? { duration } : {}),
+        ...(Number.isSafeInteger(height) && height > 0 ? { height } : {}),
+      }], sender.frameId === 0 ? sender.documentId : undefined);
+    });
+    return;
+  }
   if (!['start', 'stop'].includes(message.action) ||
       !Number.isInteger(message.tabId)) return;
   const key = String(message.tabId);
