@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ffi' show Abi;
 import 'dart:ui' show FramePhase, FrameTiming;
 
 import 'package:file_selector/file_selector.dart';
@@ -10,12 +11,18 @@ import 'package:flutter/material.dart';
 import 'advanced.dart';
 import 'browser_import.dart';
 import 'client_updates.dart';
+import 'client_update_dialog.dart';
 import 'core_output.dart';
 import 'core_service.dart';
 import 'ffmpeg.dart';
 import 'settings.dart';
 
+String _windowsRenderer = 'skia';
+
 void main(List<String> arguments) {
+  if (arguments.lastOrNull == '--segmentdesk-renderer=impeller') {
+    _windowsRenderer = 'impeller';
+  }
   final binding = WidgetsFlutterBinding.ensureInitialized();
   if (!kIsWeb &&
       defaultTargetPlatform == TargetPlatform.windows &&
@@ -314,7 +321,8 @@ class _WorkspaceState extends State<Workspace> {
   String? coreUpdateStatus;
   String? clientVersion;
   String? clientUpdateStatus;
-  String? availableClientTag;
+  ClientRelease? availableClientRelease;
+  bool showingClientUpdate = false;
   bool checkingClientUpdate = false;
   String? environmentIssue;
   bool? ffmpegAvailable;
@@ -393,22 +401,24 @@ class _WorkspaceState extends State<Workspace> {
   }
 
   Future<void> checkClientUpdate() async {
-    if (checkingClientUpdate) return;
+    if (checkingClientUpdate || showingClientUpdate) return;
     setState(() {
       checkingClientUpdate = true;
-      availableClientTag = null;
+      availableClientRelease = null;
       clientUpdateStatus = '正在检查 GitHub 正式版…';
     });
     try {
       final version = clientVersion ?? await ClientUpdates.installedVersion();
-      final tag = await ClientUpdates.latestTag();
+      final release = await ClientUpdates.latestRelease();
+      final tag = release.tag;
       final newer = ClientUpdates.isNewer(tag, version);
       if (!mounted) return;
       setState(() {
         clientVersion = version;
-        availableClientTag = newer ? tag : null;
+        availableClientRelease = newer ? release : null;
         clientUpdateStatus = newer ? '发现新版 $tag' : '已是最新正式版';
       });
+      if (newer) await showClientUpdate(release);
     } catch (_) {
       if (mounted) {
         setState(() => clientUpdateStatus = '检查失败，请检查网络后重试。');
@@ -418,8 +428,38 @@ class _WorkspaceState extends State<Workspace> {
     }
   }
 
+  Future<void> showClientUpdate(ClientRelease release) async {
+    if (!mounted || showingClientUpdate) return;
+    showingClientUpdate = true;
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => ClientUpdateDialog(
+          release: release,
+          installers: Platform.isWindows && Abi.current() == Abi.windowsX64
+              ? release.installers
+              : const [],
+          currentRenderer: _windowsRenderer,
+          onReleasePage: () => openClientReleasePage(release.tag),
+          canInstall: () => mounted && !busy,
+        ),
+      );
+    } finally {
+      showingClientUpdate = false;
+    }
+  }
+
   Future<void> openClientUpdates() async {
-    final tag = availableClientTag;
+    final release = availableClientRelease;
+    if (release != null) {
+      await showClientUpdate(release);
+      return;
+    }
+    await openClientReleasePage();
+  }
+
+  Future<void> openClientReleasePage([String? tag]) async {
     final releases = tag == null
         ? ClientUpdates.releases
         : '${ClientUpdates.releases}/tag/${Uri.encodeComponent(tag)}';
@@ -890,7 +930,7 @@ class _WorkspaceState extends State<Workspace> {
                     : checkClientUpdate,
                 clientVersion: clientVersion,
                 clientUpdateStatus: clientUpdateStatus,
-                clientUpdateAvailable: availableClientTag != null,
+                clientUpdateAvailable: availableClientRelease != null,
                 onClose: () => setState(() => showingSettings = false),
                 onSaved: (value) {
                   final changedCore = preferences.corePath != value.corePath;

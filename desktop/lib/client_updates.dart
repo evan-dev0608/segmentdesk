@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 
 class ClientUpdates {
@@ -32,7 +33,7 @@ class ClientUpdates {
     return false;
   }
 
-  static Future<String> latestTag() async {
+  static Future<ClientRelease> latestRelease() async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
     try {
       return await (() async {
@@ -52,8 +53,91 @@ class ClientUpdates {
             data['prerelease'] != false) {
           throw const FormatException('未取得正式版信息。');
         }
-        return data['tag_name'] as String;
+        final tag = data['tag_name'] as String;
+        return ClientRelease(
+          tag,
+          data['body'] is String ? data['body'] as String : '',
+          [
+            for (final asset in (data['assets'] as List? ?? const []))
+              if (asset is Map)
+                for (final renderer in ['skia', 'impeller'])
+                  if (asset['name'] ==
+                          'SegmentDesk-windows-x64-$renderer-setup.exe' &&
+                      asset['digest'] is String &&
+                      RegExp(r'^sha256:[a-fA-F0-9]{64}$')
+                          .hasMatch(asset['digest'] as String) &&
+                      asset['size'] is int &&
+                      (asset['size'] as int) > 0)
+                    ClientInstaller(
+                      tag,
+                      renderer,
+                      asset['digest'] as String,
+                      asset['size'] as int,
+                    ),
+          ],
+        );
       })().timeout(const Duration(seconds: 10));
+    } finally {
+      client.close(force: true);
+    }
+  }
+}
+
+class ClientRelease {
+  const ClientRelease(this.tag, this.notes, this.installers);
+  final String tag, notes;
+  final List<ClientInstaller> installers;
+}
+
+class ClientInstaller {
+  const ClientInstaller(this.tag, this.renderer, this.digest, this.size);
+  final String tag, renderer, digest;
+  final int size;
+
+  String get label => renderer == 'skia' ? 'Skia 兼容版' : 'Impeller 版';
+  String get filename => 'SegmentDesk-windows-x64-$renderer-setup.exe';
+
+  Future<File> download(void Function(double) onProgress) async {
+    final directory = await Directory.systemTemp.createTemp(
+      'segmentdesk-update-',
+    );
+    final installer = File(
+      '${directory.path}${Platform.pathSeparator}$filename',
+    );
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 10);
+    try {
+      final url = Uri.parse(
+        '${ClientUpdates.releases}/download/${Uri.encodeComponent(tag)}/$filename',
+      );
+      final response = await (await client.getUrl(url))
+          .close()
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode != 200) {
+        throw HttpException('下载安装包失败（HTTP ${response.statusCode}）');
+      }
+      var received = 0;
+      final sink = installer.openWrite();
+      try {
+        await sink.addStream(
+          response.timeout(const Duration(seconds: 20)).map((chunk) {
+            received += chunk.length;
+            if (received > size) throw const FormatException('安装包大小不符。');
+            onProgress(received / size);
+            return chunk;
+          }),
+        );
+      } finally {
+        await sink.close();
+      }
+      final actual = await sha256.bind(installer.openRead()).first;
+      if (received != size || 'sha256:$actual' != digest.toLowerCase()) {
+        throw const FormatException('安装包校验失败。');
+      }
+      return installer;
+    } catch (_) {
+      await directory.delete(recursive: true);
+      rethrow;
     } finally {
       client.close(force: true);
     }

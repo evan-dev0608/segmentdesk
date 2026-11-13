@@ -147,4 +147,4 @@ jobs:
         run: |
           cd dist
           sha256sum SegmentDesk-* > SHA256SUMS.txt
-          gh release create "$TAG" SegmentDesk-* SHA256SUMS.txt --verify-tag --latest --generate-notes --notes "Windows x64 推荐 Skia 兼容版。Impeller 版使用 Flutter 默认渲染器，如遇最大化黑边可改装 Skia 版。两版共用设置和核心。" --title "SegmentDesk $TAG"
+          gh release create "$TAG" SegmentDesk-* SHA256SUMS.txt --verify-tag --latest --generate-notes --notes "新增客户端更新弹窗，显示发布说明。Windows x64 可选择 Skia 或 Impeller 安装包，默认匹配当前渲染版本，下载并校验后可退出安装。v1.0.2 及更早版本请先从此页手动安装。 Windows x64 推荐 Skia 兼容版。Impeller 版使用 Flutter 默认渲染器，如遇最大化黑边可改装 Skia 版。两版共用设置和核心。" --title "SegmentDesk $TAG"

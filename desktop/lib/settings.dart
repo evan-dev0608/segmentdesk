@@ -574,7 +574,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                         icon: const Icon(Icons.open_in_new),
                                         label: Text(
                                           widget.clientUpdateAvailable
-                                              ? '前往下载'
+                                              ? '查看更新'
                                               : '打开发布页',
                                         ),
                                       ),

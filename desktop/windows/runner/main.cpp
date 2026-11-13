@@ -29,6 +29,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();
 
+#ifdef SEGMENTDESK_USE_IMPELLER
+  command_line_arguments.emplace_back("--segmentdesk-renderer=impeller");
+#else
+  command_line_arguments.emplace_back("--segmentdesk-renderer=skia");
+#endif
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);
