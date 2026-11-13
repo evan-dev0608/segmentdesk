@@ -45,6 +45,41 @@ double? coreDownloadProgress(String line) {
   return percent <= 100 ? percent / 100 : null;
 }
 
+// BinaryDownloadRunner 在输出被重定向时走 DownloadWithLogAsync：每秒写一条
+// Logger.Info 正式日志，形如 "12.34MB/262.00MB 5.21MBps"，而不是进度条帧。
+final _binarySizeProgress = RegExp(
+  r'(\d+(?:\.\d+)?)\s*(GB|MB|KB|B)\s*/\s*(\d+(?:\.\d+)?)\s*(GB|MB|KB|B)\b',
+  caseSensitive: false,
+);
+final _binarySpeed = RegExp(
+  r'\d+(?:\.\d+)?\s*(?:GB|MB|KB|B)ps\b',
+  caseSensitive: false,
+);
+
+double _binaryBytes(String number, String unit) {
+  final multiplier = switch (unit.toUpperCase()) {
+    'GB' => 1024 * 1024 * 1024,
+    'MB' => 1024 * 1024,
+    'KB' => 1024,
+    _ => 1,
+  };
+  return double.parse(number) * multiplier;
+}
+
+/// 把二进制直链的字节进度换算成 0..1；总长度未知时返回 null。
+double? binaryDownloadProgress(String line) {
+  final match = _binarySizeProgress.firstMatch(line);
+  if (match == null) return null;
+  final done = _binaryBytes(match[1]!, match[2]!);
+  final total = _binaryBytes(match[3]!, match[4]!);
+  if (total <= 0 || done < 0) return null;
+  return (done / total).clamp(0.0, 1.0);
+}
+
+/// 上游直链下载每秒一条速度日志，即使总长度未知也要识别，避免刷屏。
+bool isBinaryProgressLine(String line) =>
+    isStructuredLogLine(line) && _binarySpeed.hasMatch(line);
+
 /// 把时间戳、百分比、字节数和进度条字形归一化，用于识别同一进度条的连续帧。
 String logLineFingerprint(String line) => line
     .replaceAll(RegExp(r'\d+(?:[.,:]\d+)*%?'), '#')
@@ -54,6 +89,11 @@ String logLineFingerprint(String line) => line
 
 /// 只有「含可变数字的连续非日志行」才折叠，避免误合并 doctor 的静态分隔线。
 bool shouldFoldLogLine(String previous, String current) {
+  // 直链下载每秒写一条带时间戳的速度日志，属于同一进度条的连续帧；
+  // 例外放行，避免 1000 行上限把前面的正式日志挤掉。
+  if (isBinaryProgressLine(previous) && isBinaryProgressLine(current)) {
+    return true;
+  }
   if (isStructuredLogLine(previous) || isStructuredLogLine(current)) {
     return false;
   }

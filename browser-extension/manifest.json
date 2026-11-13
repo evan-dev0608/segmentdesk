@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SegmentDesk 媒体检测",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4QjnbWDVssZzkwXRT6MUc12BlO3v7jjxv0vrZnymOsOEm+hcUTjTcZnzRGjTwhOnTGdJROKlDmG3elf1tn0DVH5bQDePCLokf3GtZ+49LnwXiyQ367HDEgzU+BvtZVe+tbs9KEGT4SqEQ5oUWVGZBhMqcuyMApdmLPdeEkyC3AILdCOEYkXY/NvQetMth4TkebKY1QP5IpKvXeXhGS7i6Rsqs6RMUYlWIsSx7NEuC4JFDNpeBXPPRNoz9maMMLxeDQAbGsVD5jpcEgQroN/HIc2m4wEPR6GIBLQ1xDy9yzpM2lWZpfa9eqQSf3kSbCIi9XdqZ+m39YwBaqxtoy1XiwIDAQAB",
   "permissions": ["activeTab", "storage", "webRequest", "webNavigation", "clipboardWrite", "nativeMessaging", "scripting"],
   "host_permissions": ["http://*/*", "https://*/*"],

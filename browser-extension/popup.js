@@ -167,12 +167,12 @@ if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
       };
       const actions = document.createElement('div');
       actions.className = 'actions';
-      if (['HLS', 'DASH', 'MSS', 'M3U'].includes(item.type)) {
+      if (['HLS', 'DASH', 'MSS', 'M3U', 'MP4'].includes(item.type)) {
         actions.append(send);
       } else {
         const support = document.createElement('div');
         support.className = 'meta';
-        support.textContent = '直链下载待支持';
+        support.textContent = '仅可复制链接';
         label.append(support);
       }
       actions.append(copy);

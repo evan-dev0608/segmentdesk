@@ -30,7 +30,12 @@ class BrowserImport {
     return reserved.hasMatch(stem) ? '_$stem' : stem;
   }
 
-  bool get canImport => const {'HLS', 'DASH', 'MSS', 'M3U'}.contains(type);
+  bool get canImport =>
+      const {'HLS', 'DASH', 'MSS', 'M3U', 'MP4'}.contains(type);
+
+  /// 扩展探测到的 MP4 是单文件直链：核心按响应内容直接下载，
+  /// 不走清单解析、选轨与混流，需要在任务里显式标记。
+  bool get isDirect => type == 'MP4';
 
   static BrowserImport? parse(String payload) {
     final Object? data;

@@ -218,7 +218,8 @@ void main() {
         jsonEncode({'version': 1, 'type': type, 'url': url}),
       );
       expect(candidate?.url, url);
-      expect(candidate?.canImport, type != 'MP4');
+      expect(candidate?.canImport, isTrue);
+      expect(candidate?.isDirect, type == 'MP4');
     }
     expect(
       BrowserImport.parse(
@@ -231,8 +232,8 @@ void main() {
         home: NewDownload(
           initialFolder: '.',
           browserImport: imported,
-          buildRequest: (_, _, _) => throw UnimplementedError(),
-          openOptions: (_, _, _) async => null,
+          buildRequest: (_, _, _, _) => throw UnimplementedError(),
+          openOptions: (_, _, _, _) async => null,
         ),
       ),
     );
@@ -252,6 +253,165 @@ void main() {
     expect(coreTaskPhase('unrecognized'), isNull);
   });
 
+  test('strips options rejected by BinaryDownloadRunner', () {
+    final stripped = binaryDirectArguments([
+      'https://cdn.example.test/video.mp4',
+      '--save-dir',
+      'E:/Downloads',
+      '--auto-select',
+      '-M',
+      'format=mp4',
+      '--mux-after-done',
+      'format=mkv',
+      '--key',
+      'kid:key',
+      'kid2:key2',
+      '--mux-import',
+      'sub.srt',
+      '--custom-range',
+      '00:00:00-00:01:00',
+      '--key-text-file',
+      'keys.txt',
+      '--save-pattern',
+      '<SaveName>',
+      '--save-name',
+      'clip',
+      '--no-ansi-color',
+      '--no-config',
+    ]);
+    expect(stripped, [
+      'https://cdn.example.test/video.mp4',
+      '--save-dir',
+      'E:/Downloads',
+      '--auto-select',
+      '--save-name',
+      'clip',
+      '--no-ansi-color',
+      '--no-config',
+    ]);
+    // 不含被拒选项时参数原样保留。
+    expect(binaryDirectArguments(['u', '--no-config']), ['u', '--no-config']);
+  });
+
+  test('guesses binary direct links from the path or MIME hint', () {
+    expect(looksLikeBinaryDirect('https://cdn.test/a.mp4'), isTrue);
+    expect(
+      looksLikeBinaryDirect(
+        'https://v11-weba.douyinvod.com/video/tos/?mime_type=video_mp4&token=x',
+      ),
+      isTrue,
+    );
+    expect(looksLikeBinaryDirect('https://cdn.test/master.m3u8'), isFalse);
+    expect(looksLikeBinaryDirect('https://cdn.test/manifest.mpd'), isFalse);
+    expect(looksLikeBinaryDirect('C:/local/file.m3u8'), isFalse);
+  });
+
+  test('reads binary download progress and folds its speed frames', () {
+    const first = '00:27:39.153 INFO : 12.34MB/262.00MB 5.21MBps';
+    const second = '00:27:40.153 INFO : 25.00MB/262.00MB 5.40MBps';
+    expect(binaryDownloadProgress(first), closeTo(0.0471, 0.0001));
+    expect(
+      binaryDownloadProgress('00:27:39.153 INFO : 1.00GB/2.00GB 5.21MBps'),
+      closeTo(0.5, 0.00001),
+    );
+    // 总长度未知时只有速度，没有可换算的百分比。
+    expect(
+      binaryDownloadProgress('00:27:39.153 INFO : 12.34MB 5.21MBps'),
+      isNull,
+    );
+    expect(
+      binaryDownloadProgress('00:27:39.153 INFO : 12.34MB/0.00MB 5.21MBps'),
+      isNull,
+    );
+    expect(isBinaryProgressLine(first), isTrue);
+    expect(shouldFoldLogLine(first, second), isTrue);
+    expect(
+      shouldFoldLogLine('12:00:00.001 INFO : 12%', '12:00:01.002 INFO : 45%'),
+      isFalse,
+    );
+  });
+
+  test('maps binary phases and unsupported-input failures', () {
+    expect(coreTaskPhase('00:27:39.153 INFO : 内容匹配: Binary Data'), '下载中');
+    expect(
+      coreTaskPhase('00:27:39.153 INFO : 保存文件名: E:/Downloads/clip.mp4'),
+      '下载中',
+    );
+    expect(
+      coreTaskPhase('00:27:39.153 INFO : Content Matched: Binary Data'),
+      '下载中',
+    );
+    expect(
+      coreTaskPhase('00:27:39.153 INFO : Save Name: /tmp/clip.mp4'),
+      '下载中',
+    );
+    expect(coreFailureSignal('System.NotSupportedException: 当前输入不受支持'), isTrue);
+    expect(
+      coreFailureSignal('System.NotSupportedException: Input not supported'),
+      isTrue,
+    );
+    expect(
+      coreFailureSignal(
+        'Range, mux, decryption, and save-pattern options '
+        'do not apply to binary direct downloads.',
+      ),
+      isTrue,
+    );
+    expect(coreReportsUnsupportedBinary('当前输入不受支持'), isTrue);
+    expect(coreReportsUnsupportedBinary('内容匹配: Binary Data'), isFalse);
+  });
+
+  testWidgets('browser-imported MP4 enables binary direct mode', (
+    tester,
+  ) async {
+    bool? captured;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NewDownload(
+          initialFolder: '.',
+          browserImport: const BrowserImport(
+            'https://cdn.test/video.mp4?token=x',
+            '示例',
+            'MP4',
+          ),
+          buildRequest: (_, _, _, direct) {
+            captured = direct;
+            return AdvancedRequest('clip', '.', ['u'], direct: direct);
+          },
+          openOptions: (_, _, _, _) async => null,
+        ),
+      ),
+    );
+    final toggle = find.byType(SwitchListTile);
+    expect(toggle, findsOneWidget);
+    expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+    await tester.tap(find.text('开始下载'));
+    await tester.pump();
+    expect(captured, isTrue);
+  });
+
+  testWidgets('a manual MP4 URL auto-enables binary direct mode', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NewDownload(
+          initialFolder: '.',
+          buildRequest: (_, _, _, _) => AdvancedRequest('clip', '.', ['u']),
+          openOptions: (_, _, _, _) async => null,
+        ),
+      ),
+    );
+    final toggle = find.byType(SwitchListTile);
+    expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+    await tester.enterText(
+      find.byType(TextFormField).first,
+      'https://cdn.test/clip.mp4',
+    );
+    await tester.pump();
+    expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+  });
+
   testWidgets('advanced options inherit the new download fields', (
     tester,
   ) async {
@@ -260,10 +420,10 @@ void main() {
       MaterialApp(
         home: NewDownload(
           initialFolder: '.',
-          buildRequest: (input, folder, name) =>
+          buildRequest: (input, folder, name, _) =>
               AdvancedRequest(name, folder, [input]),
-          openOptions: (input, folder, name) async {
-            forwarded = '$input|${Directory(folder).isAbsolute}|$name';
+          openOptions: (input, folder, name, direct) async {
+            forwarded = '$input|${Directory(folder).isAbsolute}|$name|$direct';
             return null;
           },
         ),
@@ -276,7 +436,7 @@ void main() {
     await tester.enterText(find.byType(TextFormField).last, 'demo');
     await tester.tap(find.text('高级选项'));
     await tester.pump();
-    expect(forwarded, 'https://example.com/stream.m3u8|true|demo');
+    expect(forwarded, 'https://example.com/stream.m3u8|true|demo|false');
     expect(find.text('开始下载'), findsOneWidget);
   });
   test('appearance settings load with backwards-compatible defaults', () {

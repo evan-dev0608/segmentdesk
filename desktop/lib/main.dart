@@ -88,7 +88,15 @@ class Task {
 
 String? coreTaskPhase(String line) {
   final text = line.toLowerCase();
-  if (text.contains('开始下载...') ||
+  // BinaryDownloadRunner 不打印清单任务的「开始下载...」，而是先写
+  // 「内容匹配: Binary Data」，再写「保存文件名: <path>」开始下载。
+  if (text.contains('保存文件名:') ||
+      text.contains('保存檔案名:') ||
+      text.contains('save name:') ||
+      text.contains('内容匹配: binary data') ||
+      text.contains('內容匹配: binary data') ||
+      text.contains('content matched: binary data') ||
+      text.contains('开始下载...') ||
       text.contains('開始下載...') ||
       text.contains('start downloading...')) {
     return '下载中';
@@ -173,6 +181,67 @@ bool hasDisabledSegmentCheck(List<String> arguments) {
   return false;
 }
 
+/// 上游 BinaryDownloadRunner.ValidateOptions 明确拒绝这 6 类选项：
+/// CustomRange / MuxAfterDone / MuxImports / Keys / KeyTextFile / SavePattern。
+/// 直链任务必须在启动前移除，否则核心会直接抛 ArgumentException。
+/// 这些选项都要求值，且 --key / --mux-import 允许连续多个值，
+/// 因此跳过其后所有不以 - 开头的 token。
+const _binaryUnsupportedOptions = {
+  '-M',
+  '--mux-after-done',
+  '--mux-import',
+  '--custom-range',
+  '--key',
+  '--key-text-file',
+  '--save-pattern',
+};
+
+List<String> binaryDirectArguments(List<String> arguments) {
+  final result = <String>[];
+  var index = 0;
+  while (index < arguments.length) {
+    final token = arguments[index];
+    if (_binaryUnsupportedOptions.contains(token)) {
+      index++;
+      while (index < arguments.length && !arguments[index].startsWith('-')) {
+        index++;
+      }
+      continue;
+    }
+    result.add(token);
+    index++;
+  }
+  return result;
+}
+
+/// 核心按响应内容而非扩展名分派输入，客户端启动前无法可靠预知结果。
+/// 这里只对明显的单文件链接做默认预判，用户可在「新建下载」里手动改。
+bool looksLikeBinaryDirect(String input) {
+  final uri = Uri.tryParse(input);
+  if (uri == null || !const {'http', 'https'}.contains(uri.scheme)) {
+    return false;
+  }
+  final path = uri.path.toLowerCase();
+  if (RegExp(
+    r'\.(?:mp4|m4v|mov|m4a|mp3|aac|mkv|webm|flv|avi|bin|pdf|zip|png|jpe?g|gif|webp)$',
+  ).hasMatch(path)) {
+    return true;
+  }
+  // 签名直链的 path 常以 / 结尾，靠查询参数里的 MIME 提示兜底。
+  final query = uri.query.toLowerCase();
+  return query.contains('mime_type=video_mp4') ||
+      query.contains('mime_type=audio_mp4') ||
+      query.contains('mime_type=video%2fmp4');
+}
+
+/// 核心解析器没有 BINARY 分支时会抛 NotSupportedException，而不是走到下载器。
+bool coreReportsUnsupportedBinary(String line) {
+  final text = line.toLowerCase();
+  return text.contains('当前输入不受支持') ||
+      text.contains('當前輸入不受支援') ||
+      text.contains('input not supported');
+}
+
 /// 上游部分失败不体现在退出码里：分片重试耗尽只写 Extra / WARN，
 /// 某些失败路径还会被吞掉后继续推进。只认 ERROR 级正式日志和
 /// 上游明确的失败字面量，避免把普通 WARN 误判成失败。
@@ -194,6 +263,10 @@ bool coreFailureSignal(String line) {
     '處理失敗',
     'failed to load url',
     '加载url失败',
+    '当前输入不受支持',
+    '當前輸入不受支援',
+    'input not supported',
+    'do not apply to binary direct downloads',
   ];
   return literals.any((literal) => text.contains(literal));
 }
@@ -458,7 +531,7 @@ class _WorkspaceState extends State<Workspace> {
       builder: (_) => NewDownload(
         initialFolder: preferences.folder,
         browserImport: browserImport,
-        buildRequest: (input, folder, name) =>
+        buildRequest: (input, folder, name, direct) =>
             AdvancedRequest(name.isEmpty ? inputTitle(input) : name, folder, [
               input,
               '--save-dir',
@@ -474,18 +547,20 @@ class _WorkspaceState extends State<Workspace> {
                 'format=${preferences.container}',
               ],
               if (name.isNotEmpty) ...['--save-name', name],
-            ]),
-        openOptions: (input, folder, name) => showDialog<AdvancedRequest>(
-          context: context,
-          builder: (_) => AdvancedDialog(
-            core: active,
-            directory: folder,
-            initialInput: input,
-            initialName: name,
-            initialContainer: preferences.container,
-            configuredFFmpeg: preferences.ffmpegPath,
-          ),
-        ),
+            ], direct: direct),
+        openOptions: (input, folder, name, direct) =>
+            showDialog<AdvancedRequest>(
+              context: context,
+              builder: (_) => AdvancedDialog(
+                core: active,
+                directory: folder,
+                initialInput: input,
+                initialName: name,
+                initialContainer: preferences.container,
+                configuredFFmpeg: preferences.ffmpegPath,
+                direct: direct,
+              ),
+            ),
       ),
     );
     if (request != null && mounted && !busy) await launch(active, request);
@@ -521,6 +596,9 @@ class _WorkspaceState extends State<Workspace> {
         request.arguments,
         isolate: canIsolate,
       );
+      if (request.direct) {
+        arguments = binaryDirectArguments(arguments);
+      }
       if (request.executable == null &&
           !canIsolate &&
           !request.isDoctor &&
@@ -530,7 +608,16 @@ class _WorkspaceState extends State<Workspace> {
           '全局 config.conf 可能影响本次任务。',
         );
       }
-      if (!request.tool) {
+      if (request.direct && mounted) {
+        setState(() {
+          task.log.add(
+            '提示：二进制直链模式已忽略混流、范围、解密与命名模板参数；'
+            '文件名由核心按响应头或链接末段生成。',
+          );
+        });
+      }
+      // 直链由核心直接写单文件，不经过 ffmpeg，也不做分片校验。
+      if (!request.tool && !request.direct) {
         final ffmpeg = resolveFFmpeg(preferences.ffmpegPath);
         if (ffmpeg == null &&
             preferences.ffmpegPath.isNotEmpty &&
@@ -549,7 +636,7 @@ class _WorkspaceState extends State<Workspace> {
       }
       // 关闭分片数量校验时，上游会静默移除缺失分片并继续合并，
       // 可能以退出码 0 结束。GUI 无法从日志反推，只能显式提示风险。
-      if (hasDisabledSegmentCheck(arguments) && mounted) {
+      if (!request.direct && hasDisabledSegmentCheck(arguments) && mounted) {
         setState(() {
           task.uncheckedSegments = true;
           task.log.add(
@@ -572,6 +659,7 @@ class _WorkspaceState extends State<Workspace> {
           status = task.state;
         });
       }
+      var unsupportedHinted = false;
       void record(String line) {
         if (!mounted) return;
         setState(() {
@@ -582,8 +670,18 @@ class _WorkspaceState extends State<Workspace> {
             task.log.add(line);
           }
           if (task.log.length > 1000) task.log.removeAt(0);
+          if (request.direct &&
+              !unsupportedHinted &&
+              coreReportsUnsupportedBinary(line)) {
+            unsupportedHinted = true;
+            task.log.add(
+              '提示：当前核心不支持二进制直链。请在设置中指定支持该能力的核心路径，'
+              '或关闭「二进制直链」后重试。',
+            );
+          }
           if (coreFailureSignal(line)) task.errorSignals++;
-          final progress = coreDownloadProgress(line);
+          final progress =
+              coreDownloadProgress(line) ?? binaryDownloadProgress(line);
           if (progress != null && task.state != '停止中' && task.state != '合并中') {
             task.progress = progress;
             task.state = '下载中';
@@ -1042,12 +1140,18 @@ class NewDownload extends StatefulWidget {
   });
   final String initialFolder;
   final BrowserImport? browserImport;
-  final AdvancedRequest Function(String input, String folder, String name)
+  final AdvancedRequest Function(
+    String input,
+    String folder,
+    String name,
+    bool direct,
+  )
   buildRequest;
   final Future<AdvancedRequest?> Function(
     String input,
     String folder,
     String name,
+    bool direct,
   )
   openOptions;
 
@@ -1063,6 +1167,10 @@ class _NewDownloadState extends State<NewDownload> {
   );
   late final folder = TextEditingController(text: widget.initialFolder);
   String? localInput;
+  // 浏览器导入的 MP4 直接锁定为直链；手动输入时按链接特征预判，
+  // 用户一旦手动切换过开关就不再自动覆盖。
+  late bool direct = widget.browserImport?.isDirect ?? false;
+  late bool directTouched = widget.browserImport?.isDirect ?? false;
 
   @override
   void dispose() {
@@ -1080,6 +1188,7 @@ class _NewDownloadState extends State<NewDownload> {
           url.text.trim(),
           Directory(folder.text.trim()).absolute.path,
           name.text.trim(),
+          direct,
         ),
       );
     }
@@ -1131,6 +1240,11 @@ class _NewDownloadState extends State<NewDownload> {
                     ? null
                     : '请输入完整链接或选择本地清单';
               },
+              onChanged: (_) {
+                if (directTouched || !mounted) return;
+                final guessed = looksLikeBinaryDirect(url.text.trim());
+                if (guessed != direct) setState(() => direct = guessed);
+              },
               onFieldSubmitted: (_) => submit(),
             ),
             const SizedBox(height: 16),
@@ -1155,6 +1269,19 @@ class _NewDownloadState extends State<NewDownload> {
               controller: name,
               decoration: const InputDecoration(labelText: '文件名（可选）'),
             ),
+            const SizedBox(height: 8),
+            SwitchListTile(
+              value: direct,
+              onChanged: (value) => setState(() {
+                direct = value;
+                directTouched = true;
+              }),
+              title: const Text('二进制直链（MP4 等单文件）'),
+              subtitle: const Text('自动忽略混流、范围、解密与命名模板参数'),
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
           ],
         ),
       ),
@@ -1175,6 +1302,7 @@ class _NewDownloadState extends State<NewDownload> {
             url.text.trim(),
             Directory(output).absolute.path,
             name.text.trim(),
+            direct,
           );
           if (request != null && context.mounted) {
             Navigator.pop(context, request);

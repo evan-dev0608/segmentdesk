@@ -120,6 +120,7 @@ class AdvancedRequest {
     this.arguments, {
     this.tool = false,
     this.executable,
+    this.direct = false,
   });
   final String title, directory;
   final List<String> arguments;
@@ -128,6 +129,10 @@ class AdvancedRequest {
   /// 是否为上游工具子命令（concat / merge / mux / doctor）。
   /// 这些子命令未注册根命令的 --ffmpeg-binary-path 等选项。
   final bool tool;
+
+  /// 单文件二进制直链：核心走 BinaryDownloadRunner，启动前需要
+  /// 裁剪混流 / 范围 / 解密 / 命名模板类参数。
+  final bool direct;
 
   /// doctor 的职责是检查本机环境（含全局配置文件），不能被配置隔离改变。
   bool get isDoctor => tool && arguments.firstOrNull == 'doctor';
@@ -144,6 +149,7 @@ class AdvancedDialog extends StatefulWidget {
     this.toolsOnly = false,
     this.ffmpeg,
     this.configuredFFmpeg = '',
+    this.direct = false,
   });
   final CoreInstall core;
   final String directory;
@@ -153,6 +159,7 @@ class AdvancedDialog extends StatefulWidget {
   final bool toolsOnly;
   final String? ffmpeg;
   final String configuredFFmpeg;
+  final bool direct;
 
   @override
   State<AdvancedDialog> createState() => _AdvancedDialogState();
@@ -219,9 +226,10 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
   bool loading = true;
   bool probing = false;
 
-  /// 表单里是否存在核心提供的手动选轨选项。
+  /// 表单里是否存在核心提供的手动选轨选项；直链没有轨道元数据。
   bool get supportsTrackSelection =>
-      tools['']?.any((option) => option.flag == '--select-video') ?? false;
+      !widget.direct &&
+      (tools['']?.any((option) => option.flag == '--select-video') ?? false);
 
   /// 旧发行版没有 --no-config；预览命令同样不能无条件塞入未知参数。
   bool get supportsConfigIsolation =>
@@ -597,6 +605,7 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
         widget.directory,
         arguments,
         tool: mode.isNotEmpty,
+        direct: widget.direct && mode.isEmpty,
       ),
     );
   }
@@ -799,6 +808,15 @@ class _AdvancedDialogState extends State<AdvancedDialog> {
                       ),
                     ),
                     const SizedBox(height: 4),
+                    if (widget.direct)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          '二进制直链模式：核心按响应内容直接下载单文件，'
+                          '混流、范围、解密与命名模板参数会在启动时忽略。',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
                     Wrap(
                       spacing: 6,
                       children: [
