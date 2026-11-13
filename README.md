@@ -7,7 +7,7 @@
 <p align="center">基于 N_m3u8DL-RE 的 Flutter 流媒体下载桌面客户端</p>
 
 <p align="center">
-  <a href="https://github.com/evan-dev0608/segmentdesk/releases/tag/v1.0.3">下载 v1.0.3</a> ·
+  <a href="https://github.com/evan-dev0608/segmentdesk/releases/tag/v1.0.4">下载 v1.0.4</a> ·
   <a href="docs/usage.md">使用说明</a> ·
   <a href="desktop/README.md">从源码运行</a> ·
   <a href="https://github.com/nilaoda/N_m3u8DL-RE">上游核心</a>
@@ -24,7 +24,7 @@ SegmentDesk 是 [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE) 的图形�
 - **轨道与频道选择** · 读取轨道后图形化挑选视频、音频、字幕与点播分段；从本地或远程 M3U 勾选 IPTV 频道，M3U 判定对齐上游 `IPTVExtractor.IsPlaylist`。
 - **核心与 FFmpeg** · 设置页路径框可直接编辑，自动回填识别到的路径和版本；两者都支持「在线下载」或选择本地可执行文件，保存时校验可用性。**FFmpeg 在线下载仅支持 Windows x64**，其他平台按钮可见但禁用，需自备 ffmpeg 并加入 PATH。
 - **核心安装校验** · 按系统与架构（x64 / arm64）挑选官方发行包；GitHub API 提供文件大小与 SHA-256 时逐项校验，网络失败回退官方发行页则跳过校验并标注「本次未做完整性校验」。安装后会试运行 `--version` 并原子切换，失败自动回滚。
-- **客户端更新** · 启动或手动检查发现新版时会显示发布说明。Windows x64 可在弹窗选择 Skia 或 Impeller，默认选中当前渲染版本；下载并校验后可退出并安装。其他平台可打开发布页。
+- **客户端更新** · 启动或手动检查发现新版时会显示发布说明。Windows x64 可在弹窗选择 Skia 或 Impeller，默认选中当前渲染版本；下载并校验后可退出并安装。遇到连接错误时会尝试通过 Windows 自带的 curl 重新下载。其他平台可打开发布页。
 - **外观与下载偏好** · 跟随系统 / 浅色 / 深色三种模式、6 个预设主题色与「从图片提取」主题色，保存即时生效；默认保存目录与输出格式（MKV / MP4 / TS / 分别保存轨道）。
 
 ## 开始使用
@@ -38,7 +38,7 @@ SegmentDesk 是 [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE) 的图形�
 
 Windows x64 优先选 **Skia 兼容版**。**Impeller 版**使用 Flutter 在 Windows 上的默认渲染器。如果最大化后出现黑边或画面停留在旧尺寸，可改装 Skia 版。两种安装包使用同一个应用标识，安装另一版会替换当前客户端，并沿用原有设置和下载核心。
 
-[GitHub Releases](https://github.com/evan-dev0608/segmentdesk/releases/tag/v1.0.3) 的 v1.0.3 提供：
+[GitHub Releases](https://github.com/evan-dev0608/segmentdesk/releases/tag/v1.0.4) 的 v1.0.4 提供：
 
 | 平台 | 文件 |
 | --- | --- |

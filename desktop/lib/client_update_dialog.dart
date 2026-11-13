@@ -33,6 +33,7 @@ class _ClientUpdateDialogState extends State<ClientUpdateDialog> {
   File? downloaded;
   double? progress;
   bool busy = false;
+  bool verifying = false;
   String? error;
 
   Future<void> download() async {
@@ -40,12 +41,18 @@ class _ClientUpdateDialogState extends State<ClientUpdateDialog> {
     setState(() {
       busy = true;
       progress = 0;
+      verifying = false;
       error = null;
     });
     try {
-      final file = await installer.download((value) {
-        if (mounted) setState(() => progress = value);
-      });
+      final file = await installer.download(
+        (value) {
+          if (mounted) setState(() => progress = value);
+        },
+        onVerifying: () {
+          if (mounted) setState(() => verifying = true);
+        },
+      );
       if (!mounted) {
         await file.parent.delete(recursive: true);
         return;
@@ -129,9 +136,11 @@ class _ClientUpdateDialogState extends State<ClientUpdateDialog> {
                 const SizedBox(height: 12),
                 LinearProgressIndicator(value: progress),
                 Text(
-                  progress == 1
+                  verifying
                       ? '正在校验安装包…'
-                      : '正在下载 ${(progress! * 100).round()}%',
+                      : progress == 1
+                      ? '正在完成下载…'
+                      : '正在下载 ${(progress! * 100).floor()}%',
                 ),
               ],
               if (downloaded != null) const Text('安装包已下载并通过校验。'),

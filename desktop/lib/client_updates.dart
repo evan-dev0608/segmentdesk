@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -97,7 +98,10 @@ class ClientInstaller {
   String get label => renderer == 'skia' ? 'Skia 兼容版' : 'Impeller 版';
   String get filename => 'SegmentDesk-windows-x64-$renderer-setup.exe';
 
-  Future<File> download(void Function(double) onProgress) async {
+  Future<File> download(
+    void Function(double) onProgress, {
+    required void Function() onVerifying,
+  }) async {
     final directory = await Directory.systemTemp.createTemp(
       'segmentdesk-update-',
     );
@@ -110,28 +114,19 @@ class ClientInstaller {
       final url = Uri.parse(
         '${ClientUpdates.releases}/download/${Uri.encodeComponent(tag)}/$filename',
       );
-      final response = await (await client.getUrl(url))
-          .close()
-          .timeout(const Duration(seconds: 20));
-      if (response.statusCode != 200) {
-        throw HttpException('下载安装包失败（HTTP ${response.statusCode}）');
-      }
-      var received = 0;
-      final sink = installer.openWrite();
       try {
-        await sink.addStream(
-          response.timeout(const Duration(seconds: 20)).map((chunk) {
-            received += chunk.length;
-            if (received > size) throw const FormatException('安装包大小不符。');
-            onProgress(received / size);
-            return chunk;
-          }),
-        );
-      } finally {
-        await sink.close();
+        await _downloadWithHttp(client, url, installer, onProgress);
+      } on IOException {
+        client.close(force: true);
+        await _downloadWithCurl(url, installer, onProgress);
+      } on TimeoutException {
+        client.close(force: true);
+        await _downloadWithCurl(url, installer, onProgress);
       }
+      onVerifying();
       final actual = await sha256.bind(installer.openRead()).first;
-      if (received != size || 'sha256:$actual' != digest.toLowerCase()) {
+      if (await installer.length() != size ||
+          'sha256:$actual' != digest.toLowerCase()) {
         throw const FormatException('安装包校验失败。');
       }
       return installer;
@@ -141,5 +136,76 @@ class ClientInstaller {
     } finally {
       client.close(force: true);
     }
+  }
+
+  Future<void> _downloadWithHttp(
+    HttpClient client,
+    Uri url,
+    File installer,
+    void Function(double) onProgress,
+  ) async {
+    final response = await (await client.getUrl(url))
+        .close()
+        .timeout(const Duration(seconds: 20));
+    if (response.statusCode != 200) {
+      throw HttpException('下载安装包失败（HTTP ${response.statusCode}）');
+    }
+    var received = 0;
+    final sink = installer.openWrite();
+    try {
+      await sink.addStream(
+        response.timeout(const Duration(seconds: 20)).map((chunk) {
+          received += chunk.length;
+          if (received > size) throw const FormatException('安装包大小不符。');
+          onProgress(received / size);
+          return chunk;
+        }),
+      );
+    } finally {
+      await sink.close();
+    }
+  }
+
+  Future<void> _downloadWithCurl(
+    Uri url,
+    File installer,
+    void Function(double) onProgress,
+  ) async {
+    onProgress(0);
+    final windows = Platform.environment['SystemRoot'] ?? r'C:\Windows';
+    try {
+      final result = await Process.run('$windows\\System32\\curl.exe', [
+        '--disable',
+        '--fail',
+        '--silent',
+        '--show-error',
+        '--location',
+        '--proto',
+        '=https',
+        '--proto-redir',
+        '=https',
+        '--connect-timeout',
+        '10',
+        '--max-time',
+        '60',
+        '--max-filesize',
+        '$size',
+        '--retry',
+        '1',
+        '--retry-all-errors',
+        '--retry-max-time',
+        '60',
+        '--output',
+        installer.path,
+        url.toString(),
+      ]);
+      if (result.exitCode == 0) {
+        onProgress(1);
+        return;
+      }
+    } on ProcessException {
+      // The system downloader may be unavailable.
+    }
+    throw const HttpException('无法连接 GitHub 下载服务，请重试或打开发布页下载。');
   }
 }
